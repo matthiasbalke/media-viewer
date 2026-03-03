@@ -7,6 +7,11 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = []
+# Enable full HEIC support via system-installed libheif (brew install libheif / apt install libheif1)
+libheif = ["dep:libheif-rs"]
+
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
@@ -34,7 +39,8 @@ dirs = "6"
 tauri-plugin-os = "2.3.2"
 base64 = "0.22.1"
 mp4 = "0.14"
-kamadak-exif = "0.5"
+kamadak-exif = "0.6.1"
+libheif-rs = { version = "2.7.0", optional = true }
 
 # Optimize image processing dependencies even in dev builds
 [profile.dev.package.image]

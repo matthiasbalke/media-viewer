@@ -35,11 +35,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: install dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04' || matrix.platform == 'ubuntu-22.04-arm' # This must match the platform value defined above.
+      - name: install libheif (macOS only)
+        if: ${{ startsWith(matrix.platform, 'macos') }}
+        run: |
+          brew install libheif
+
+      - name: install libheif1 (ubuntu only)
+        if: ${{ startsWith(matrix.platform, 'ubuntu') }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils libheif1
+
+      - name: install libheif (windows only)
+        if: ${{ startsWith(matrix.platform, 'windows') }}
+        run: |
+          vcpkg install libheif
 
       - name: setup node
         uses: actions/setup-node@v4
@@ -80,7 +90,7 @@ jobs:
           releaseDraft: true
           prerelease: false
           assetNamePattern: "[platform]-[arch]-[name]-[version][ext]"
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} --features libheif
 
       - name: build and provide workflow artifacts
         uses: tauri-apps/tauri-action@v0
@@ -91,7 +101,7 @@ jobs:
           assetNamePattern: "[platform]-[arch]-[name]-[version][ext]"
           # will be released in 1.0.0
           #uploadWorkflowArtifacts: true
-          args: ${{ matrix.args }} --no-sign
+          args: ${{ matrix.args }} --features libheif --no-sign
 
       - name: Upload macOS bundle artifacts
         uses: actions/upload-artifact@v6
