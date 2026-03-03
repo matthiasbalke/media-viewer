@@ -90,8 +90,19 @@
             return;
         }
 
-        // Navigation
+        // Navigation and Seeking
         if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+            if (event.shiftKey && file.isVideo) {
+                event.preventDefault();
+                const seekAmount = 5; // seconds
+                if (event.key === "ArrowRight") {
+                    currentTime = Math.min(currentTime + seekAmount, duration);
+                } else {
+                    currentTime = Math.max(currentTime - seekAmount, 0);
+                }
+                return;
+            }
+
             const currentIndex = files.findIndex((f) => f.path === file.path);
             if (currentIndex === -1) return;
 
