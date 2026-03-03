@@ -92,6 +92,7 @@ jobs:
           ACTIONS_RUNTIME_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
         run: |
           vcpkg install libheif
+          vcpkg integrate install
 
       - name: copy libheif DLLs for bundling (windows only)
         if: ${{ startsWith(matrix.platform, 'windows') }}
@@ -137,6 +138,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           PKG_CONFIG_PATH: ${{ matrix.pkgConfigPath }}
+          VCPKG_ROOT: C:\vcpkg
         with:
           tagName: v__VERSION__ # the action automatically replaces \_\_VERSION\_\_ with the app version.
           releaseName: 'v__VERSION__'
@@ -152,6 +154,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PKG_CONFIG_PATH: ${{ matrix.pkgConfigPath }}
+          VCPKG_ROOT: C:\vcpkg
         with:
           assetNamePattern: "[platform]-[arch]-[name]-[version][ext]"
           # will be released in 1.0.0
