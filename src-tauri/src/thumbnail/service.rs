@@ -125,7 +125,6 @@ impl ThumbnailService {
                 if matches!(track.track_type(), Ok(TrackType::Video)) {
                     let w = track.width();
                     let h = track.height();
-                    println!("[thumbnail] video track id={} {}x{}", id, w, h);
                     if w > 0 && h > 0 {
                         Some((id, w, h))
                     } else {
@@ -137,47 +136,22 @@ impl ThumbnailService {
             })
             .collect();
 
-        println!(
-            "[thumbnail] {} video track(s) found in: {}",
-            video_tracks.len(),
-            path.display()
-        );
-
         // Sort ascending by width — the thumbnail track is always the smallest
         video_tracks.sort_by_key(|&(_, w, _)| w);
 
         // Try tracks <= 320px wide first (thumbnail tracks), then fall through
-        for &(track_id, w, h) in &video_tracks {
+        for &(track_id, w, _) in &video_tracks {
             if w > 320 {
-                println!(
-                    "[thumbnail] track {} ({}x{}) too large, stopping search",
-                    track_id, w, h
-                );
                 break;
             }
-            println!(
-                "[thumbnail] trying thumbnail track {} ({}x{})",
-                track_id, w, h
-            );
             if let Ok(Some(sample)) = mp4.read_sample(track_id, 1) {
                 let bytes = sample.bytes.to_vec();
-                println!(
-                    "[thumbnail] extracted {} bytes from track {}",
-                    bytes.len(),
-                    track_id
-                );
                 if !bytes.is_empty() {
                     return Some(bytes);
                 }
-            } else {
-                println!("[thumbnail] no sample data in track {}", track_id);
             }
         }
 
-        println!(
-            "[thumbnail] no embedded thumbnail found in: {}",
-            path.display()
-        );
         None
     }
 
@@ -188,88 +162,36 @@ impl ThumbnailService {
         use exif::{In, Reader, Tag, Value};
         use std::io::BufReader;
 
-        println!(
-            "[thumbnail] heic: attempting extraction for: {}",
-            path.display()
-        );
-
-        let file = match std::fs::File::open(path) {
-            Ok(f) => f,
-            Err(e) => {
-                println!("[thumbnail] heic: failed to open file: {}", e);
-                return None;
-            }
-        };
+        let file = std::fs::File::open(path).ok()?;
         let mut buf = BufReader::new(file);
 
         // kamadak-exif supports reading EXIF from HEIF/HEIC containers directly
-        let exif = match Reader::new().read_from_container(&mut buf) {
-            Ok(e) => e,
-            Err(e) => {
-                println!("[thumbnail] heic: exif container parse failed: {}", e);
-                return None;
-            }
-        };
-
-        println!(
-            "[thumbnail] heic: exif parsed, buf size={}",
-            exif.buf().len()
-        );
+        let exif = Reader::new().read_from_container(&mut buf).ok()?;
 
         // IFD1 contains the embedded thumbnail image reference
         let jpeg_offset = match exif.get_field(Tag::JPEGInterchangeFormat, In::THUMBNAIL) {
             Some(f) => match &f.value {
                 Value::Long(v) => match v.first() {
                     Some(&o) => o as usize,
-                    None => {
-                        println!("[thumbnail] heic: JPEGInterchangeFormat Long is empty");
-                        return None;
-                    }
+                    None => return None,
                 },
-                other => {
-                    println!(
-                        "[thumbnail] heic: JPEGInterchangeFormat unexpected type: {:?}",
-                        other
-                    );
-                    return None;
-                }
+                _ => return None,
             },
-            None => {
-                println!("[thumbnail] heic: no JPEGInterchangeFormat tag in IFD1/THUMBNAIL");
-                return None;
-            }
+            None => return None,
         };
 
         let jpeg_length = match exif.get_field(Tag::JPEGInterchangeFormatLength, In::THUMBNAIL) {
             Some(f) => match &f.value {
                 Value::Long(v) => match v.first() {
                     Some(&l) => l as usize,
-                    None => {
-                        println!("[thumbnail] heic: JPEGInterchangeFormatLength Long is empty");
-                        return None;
-                    }
+                    None => return None,
                 },
-                other => {
-                    println!(
-                        "[thumbnail] heic: JPEGInterchangeFormatLength unexpected type: {:?}",
-                        other
-                    );
-                    return None;
-                }
+                _ => return None,
             },
-            None => {
-                println!("[thumbnail] heic: no JPEGInterchangeFormatLength tag in IFD1/THUMBNAIL");
-                return None;
-            }
+            None => return None,
         };
 
-        println!(
-            "[thumbnail] heic: thumbnail offset={} length={}",
-            jpeg_offset, jpeg_length
-        );
-
         if jpeg_length == 0 {
-            println!("[thumbnail] heic: jpeg_length is 0, aborting");
             return None;
         }
 
@@ -277,34 +199,16 @@ impl ThumbnailService {
         // JPEGInterchangeFormat offset is relative to the TIFF header (buf start).
         let raw = exif.buf();
         let end = jpeg_offset.saturating_add(jpeg_length);
-
-        println!(
-            "[thumbnail] heic: raw exif buf len={}, end={}",
-            raw.len(),
-            end
-        );
-
         if end > raw.len() {
-            println!("[thumbnail] heic: offset+length exceeds buf size, out of bounds");
             return None;
         }
 
         let thumb_bytes = raw[jpeg_offset..end].to_vec();
-        println!(
-            "[thumbnail] heic: first 4 bytes: {:02X?}",
-            &thumb_bytes[..thumb_bytes.len().min(4)]
-        );
 
         // Validate JPEG magic bytes (0xFF 0xD8 0xFF)
         if thumb_bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-            println!(
-                "[thumbnail] heic: extracted valid jpeg thumbnail: {} bytes from: {}",
-                thumb_bytes.len(),
-                path.display()
-            );
             Some(thumb_bytes)
         } else {
-            println!("[thumbnail] heic: bytes don't start with JPEG magic, trying ffmpeg");
             None
         }
     }
