@@ -71,6 +71,9 @@
     let currentSessionId: number | null = $state(null);
     let nextSessionId = 0;
 
+    let selectedIndex = $state(0);
+    let itemRefs: HTMLElement[] = [];
+
     // Event listener cleanup
     let unlistenFn: (() => void) | null = null;
 
@@ -154,6 +157,7 @@
             // Sort by name
             files = mediaFiles.sort((a, b) => a.name.localeCompare(b.name));
             loading = false;
+            selectedIndex = 0;
 
             // Set up event listener before triggering generation
             await setupListener();
@@ -188,6 +192,7 @@
         } else if (!path) {
             files = [];
             currentSessionId = null;
+            selectedIndex = 0;
         }
     });
 
@@ -204,7 +209,107 @@
         itemCount = files.length;
         mediaFiles = files;
     });
+
+    function handleKeydown(event: KeyboardEvent) {
+        if (!files.length) return;
+
+        // Ignore if focus is in an input field
+        const activeNode = document.activeElement?.nodeName;
+        if (activeNode === "INPUT" || activeNode === "TEXTAREA") return;
+
+        let newIndex = selectedIndex;
+        // Determine columns
+        let cols = 1;
+        if (itemRefs.length > 1 && itemRefs[0] && itemRefs[1]) {
+            const firstY = itemRefs[0].offsetTop;
+            for (let i = 1; i < itemRefs.length; i++) {
+                if (itemRefs[i] && itemRefs[i].offsetTop > firstY) {
+                    cols = i;
+                    break;
+                }
+            }
+            if (
+                cols === 1 &&
+                itemRefs[itemRefs.length - 1] &&
+                itemRefs[itemRefs.length - 1].offsetTop === firstY
+            ) {
+                cols = itemRefs.length;
+            }
+        }
+
+        let handled = false;
+
+        switch (event.key) {
+            case "ArrowRight":
+                if (newIndex < files.length - 1) newIndex++;
+                handled = true;
+                break;
+            case "ArrowLeft":
+                if (newIndex > 0) newIndex--;
+                handled = true;
+                break;
+            case "ArrowDown":
+                if (newIndex + cols < files.length) {
+                    newIndex += cols;
+                } else {
+                    newIndex = files.length - 1;
+                }
+                handled = true;
+                break;
+            case "ArrowUp":
+                if (newIndex - cols >= 0) {
+                    newIndex -= cols;
+                } else {
+                    newIndex = 0;
+                }
+                handled = true;
+                break;
+            case "PageDown":
+                if (newIndex + cols * 5 < files.length) {
+                    newIndex += cols * 5;
+                } else {
+                    newIndex = files.length - 1;
+                }
+                handled = true;
+                break;
+            case "PageUp":
+                if (newIndex - cols * 5 >= 0) {
+                    newIndex -= cols * 5;
+                } else {
+                    newIndex = 0;
+                }
+                handled = true;
+                break;
+            case "Enter":
+                if (onImageOpen && files[selectedIndex]) {
+                    onImageOpen(files[selectedIndex]);
+                }
+                handled = true;
+                break;
+        }
+
+        if (handled) {
+            event.preventDefault();
+        }
+
+        if (
+            newIndex !== selectedIndex &&
+            newIndex >= 0 &&
+            newIndex < files.length
+        ) {
+            selectedIndex = newIndex;
+            // Scroll into view
+            if (itemRefs[selectedIndex]) {
+                itemRefs[selectedIndex].scrollIntoView({
+                    block: "nearest",
+                    behavior: "smooth",
+                });
+            }
+        }
+    }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <div class="p-4">
     {#if !path}
@@ -226,14 +331,19 @@
             class="grid gap-4"
             style="grid-template-columns: repeat(auto-fill, minmax({thumbnailSize}px, 1fr));"
         >
-            {#each files as file}
+            {#each files as file, i}
                 <div
-                    class="group relative rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 transition-all cursor-pointer"
+                    bind:this={itemRefs[i]}
+                    class="group relative rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 focus:outline-none transition-all cursor-pointer {i ===
+                    selectedIndex
+                        ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-zinc-900 z-10'
+                        : ''}"
                     class:bg-zinc-800={file.thumbnailState !== "ready"}
                     class:bg-transparent={file.thumbnailState === "ready"}
                     style="height: {thumbnailSize}px;"
                     role="button"
                     tabindex="0"
+                    onclick={() => (selectedIndex = i)}
                     ondblclick={() => onImageOpen?.(file)}
                 >
                     {#if file.thumbnailState === "loading"}
