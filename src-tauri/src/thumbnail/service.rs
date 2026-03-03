@@ -296,7 +296,7 @@ impl ThumbnailService {
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "video".to_string());
-        let temp_out = std::env::temp_dir().join(format!("miru_thumb_{}.jpg", file_stem));
+        let temp_out = std::env::temp_dir().join(format!("video_thumb_{}.jpg", file_stem));
 
         // Try common ffmpeg locations: PATH first, then Homebrew paths
         let ffmpeg_candidates = [
