@@ -4,13 +4,15 @@
     import { settingsStore } from "$lib/stores/settings.svelte";
 
     interface Props {
+        rootId: string;
         path: string;
         depth?: number;
         selectedPath?: string | null;
-        onSelect?: (path: string) => void;
+        selectedTreeItemId?: string | null;
+        onSelect?: (path: string, id: string) => void;
     }
 
-    let { path, depth = 0, selectedPath = null, onSelect }: Props = $props();
+    let { rootId, path, depth = 0, selectedPath = null, selectedTreeItemId = null, onSelect }: Props = $props();
 
     interface FileEntry {
         name: string;
@@ -85,7 +87,7 @@
         }
     }
 
-    function toggleDir(dirPath: string) {
+    function toggleDir(dirPath: string, id: string) {
         if (expandedDirs.has(dirPath)) {
             expandedDirs.delete(dirPath);
             expandedDirs = new Set(expandedDirs);
@@ -94,7 +96,7 @@
             expandedDirs = new Set(expandedDirs);
         }
         // Notify parent of selection
-        onSelect?.(dirPath);
+        onSelect?.(dirPath, id);
     }
 
     // Load entries on mount
@@ -102,120 +104,7 @@
         loadEntries();
     });
 
-    function handleKeydown(e: KeyboardEvent) {
-        if (depth !== 0) return; // Only process at root level
 
-        const modifier = settingsStore.treeNavModifier;
-        const hasModifier =
-            (modifier === "Alt" &&
-                e.altKey &&
-                !e.ctrlKey &&
-                !e.shiftKey &&
-                !e.metaKey) ||
-            (modifier === "Control" &&
-                e.ctrlKey &&
-                !e.altKey &&
-                !e.shiftKey &&
-                !e.metaKey) ||
-            (modifier === "Shift" &&
-                e.shiftKey &&
-                !e.ctrlKey &&
-                !e.altKey &&
-                !e.metaKey) ||
-            (modifier === "Meta" &&
-                e.metaKey &&
-                !e.ctrlKey &&
-                !e.altKey &&
-                !e.shiftKey);
-
-        if (!hasModifier) return;
-
-        if (
-            [
-                "ArrowUp",
-                "ArrowDown",
-                "PageUp",
-                "PageDown",
-                "ArrowLeft",
-                "ArrowRight",
-            ].includes(e.key)
-        ) {
-            e.preventDefault();
-
-            // Use DOM query to find all flattened visible items in vertical order
-            const items = Array.from(
-                document.querySelectorAll<HTMLButtonElement>(
-                    ".folder-tree-item",
-                ),
-            );
-            if (items.length === 0) return;
-
-            let currentIndex = items.findIndex(
-                (el) => el.dataset.path === selectedPath,
-            );
-
-            let isInitial = false;
-            if (currentIndex === -1) {
-                currentIndex = 0;
-                isInitial = true;
-            }
-
-            const currentItem = items[currentIndex];
-
-            if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
-                // if (currentIndex === -1) {
-                //     const firstItem = items[0];
-                //     if (firstItem.dataset.path) {
-                //         onSelect?.(firstItem.dataset.path);
-                //         firstItem.scrollIntoView({ block: "nearest" });
-                //     }
-                //     return;
-                // }
-
-                const currentItem = items[currentIndex];
-                if (e.key === "ArrowRight") {
-                    if (
-                        currentItem.dataset.expanded === "false" &&
-                        currentItem.dataset.hasSubfolders === "true"
-                    ) {
-                        currentItem.click();
-                    }
-                } else if (e.key === "ArrowLeft") {
-                    if (currentItem.dataset.expanded === "true") {
-                        currentItem.click();
-                    }
-                }
-                return;
-            }
-
-            let nextIndex = currentIndex;
-
-            if (e.key === "ArrowDown") {
-                nextIndex =
-                    currentIndex < items.length - 1
-                        ? currentIndex + 1
-                        : currentIndex;
-            } else if (e.key === "ArrowUp") {
-                nextIndex = currentIndex > 0 ? currentIndex - 1 : 0;
-            } else if (e.key === "PageDown") {
-                nextIndex = Math.min(currentIndex + 10, items.length - 1);
-            } else if (e.key === "PageUp") {
-                nextIndex = Math.max(currentIndex - 10, 0);
-            }
-
-            if (
-                nextIndex !== currentIndex &&
-                nextIndex >= 0 &&
-                nextIndex < items.length
-            ) {
-                const nextPath = items[nextIndex].dataset.path;
-                if (nextPath) {
-                    onSelect?.(nextPath);
-                    items[nextIndex].scrollIntoView({ block: "nearest" });
-                }
-            }
-        }
-    }
 </script>
 
 <div class="folder-tree">
@@ -226,13 +115,14 @@
     {:else}
         <!-- Show root directory as top-level element -->
         {#if depth === 0}
+            {@const itemId = rootId + '|' + path}
             <button
-                class="folder-tree-item flex items-center gap-2 w-full px-2 py-1 text-left text-sm hover:bg-zinc-800 rounded transition-colors {selectedPath ===
-                path
+                class="folder-tree-item flex items-center gap-2 w-full px-2 py-1 text-left text-sm hover:bg-zinc-800 rounded transition-colors {selectedTreeItemId === itemId
                     ? 'text-white font-bold bg-zinc-800/50'
                     : 'text-zinc-300 font-medium'}"
-                onclick={() => toggleDir(path)}
+                onclick={() => toggleDir(path, itemId)}
                 data-path={path}
+                data-id={itemId}
                 data-expanded={expandedDirs.has(path)}
                 data-has-subfolders={true}
             >
@@ -247,14 +137,15 @@
         <!-- Show children when expanded (or always for non-root) -->
         {#if depth > 0 || expandedDirs.has(path)}
             {#each entries as entry}
+                {@const entryId = rootId + '|' + entry.path}
                 <button
-                    class="folder-tree-item flex items-center gap-2 w-full px-2 py-1 text-left text-sm hover:bg-zinc-800 rounded transition-colors {selectedPath ===
-                    entry.path
+                    class="folder-tree-item flex items-center gap-2 w-full px-2 py-1 text-left text-sm hover:bg-zinc-800 rounded transition-colors {selectedTreeItemId === entryId
                         ? 'text-white font-bold bg-zinc-800/50'
                         : 'text-zinc-300'}"
                     style="padding-left: {(depth + 1) * 16}px"
-                    onclick={() => toggleDir(entry.path)}
+                    onclick={() => toggleDir(entry.path, entryId)}
                     data-path={entry.path}
+                    data-id={entryId}
                     data-expanded={expandedDirs.has(entry.path)}
                     data-has-subfolders={entry.hasSubfolders}
                 >
@@ -269,9 +160,11 @@
 
                 {#if expandedDirs.has(entry.path)}
                     <FolderTree
+                        {rootId}
                         path={entry.path}
                         depth={depth + 1}
                         {selectedPath}
+                        {selectedTreeItemId}
                         {onSelect}
                     />
                 {/if}
