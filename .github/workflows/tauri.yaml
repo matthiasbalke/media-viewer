@@ -27,13 +27,13 @@ jobs:
           - platform: 'ubuntu-22.04'
             arch: 'amd64'
             args: ''
-            pkgConfigPath: '/usr/lib/x86_64-linux-gnu/pkgconfig'
+            pkgConfigPath: '/usr/local/lib/pkgconfig'
 
           - platform: 'ubuntu-22.04-arm' # Only available in public repos.
             arch: 'arm64'
             args: ''
-            pkgConfigPath: '/usr/lib/aarch64-linux-gnu/pkgconfig'
-            
+            pkgConfigPath: '/usr/local/lib/pkgconfig'
+
           - platform: 'windows-latest'
             arch: 'x64'
             args: ''
@@ -48,14 +48,40 @@ jobs:
         run: |
           brew install libheif dylibbundler
 
-      - name: install libheif1 (ubuntu only)
-        if: ${{ startsWith(matrix.platform, 'ubuntu') }}
+      - name: cache libheif build (ubuntu only)
+        if: ${{ startsWith(matrix.platform, 'ubuntu') }}
+        id: cache-libheif
+        uses: actions/cache@v4
+        with:
+          path: /usr/local
+          key: libheif-1.21.2-${{ matrix.platform }}-${{ matrix.arch }}
+
+      - name: install apt dependencies (ubuntu only)
+        if: ${{ startsWith(matrix.platform, 'ubuntu') }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils libheif-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      - name: compile libheif (ubuntu only)
+        if: ${{ startsWith(matrix.platform, 'ubuntu') && steps.cache-libheif.outputs.cache-hit != 'true' }}
+        run: |
+          sudo apt-get install -y cmake libde265-dev libx265-dev libjpeg-dev libpng-dev
+          # Ubuntu apt repos only have libheif 1.12-1.17; libheif-rs 2.7.0 requires >= 1.21
+          LIBHEIF_VERSION=1.21.2
+          wget -q "https://github.com/strukturag/libheif/releases/download/v${LIBHEIF_VERSION}/libheif-${LIBHEIF_VERSION}.tar.gz"
+          tar -xzf "libheif-${LIBHEIF_VERSION}.tar.gz"
+          cd "libheif-${LIBHEIF_VERSION}"
+          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DWITH_EXAMPLES=OFF -DWITH_TESTS=OFF .
+          make -j$(nproc)
+          sudo make install
+
+      - name: register libheif (ubuntu only)
+        if: ${{ startsWith(matrix.platform, 'ubuntu') }}
+        run: sudo ldconfig
 
       - name: install libheif (windows only)
-        if: ${{ startsWith(matrix.platform, 'windows') }}
+        if: ${{ startsWith(matrix.platform, 'windows') }}
         run: |
           vcpkg install libheif
 
@@ -182,7 +208,7 @@ jobs:
             hdiutil create -volname "$VOLNAME" -srcfolder "$APP_NAME" -ov -format UDZO "$DMG"
           fi
 
-          # Re-sign the new archive with the Tauri updater key (if present)
+          # Re-sign the DMG with the Tauri updater key (if present)
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
             cd "$GITHUB_WORKSPACE"
             bunx tauri signer sign \
@@ -204,7 +230,7 @@ jobs:
 
       - name: Upload Windows bundle artifacts
         uses: actions/upload-artifact@v6
-        if: ${{ startsWith(matrix.platform, 'windows') && github.event_name == 'pull_request' }}
+        if: ${{ startsWith(matrix.platform, 'windows') && github.event_name == 'pull_request' }}
         with:
           name: tauri-bundles-${{ matrix.platform }}
           path: |
@@ -215,7 +241,7 @@ jobs:
 
       - name: Upload Linux bundle artifacts
         uses: actions/upload-artifact@v6
-        if: ${{ startsWith(matrix.platform, 'ubuntu') && github.event_name == 'pull_request' }}
+        if: ${{ startsWith(matrix.platform, 'ubuntu') && github.event_name == 'pull_request' }}
         with:
           name: tauri-bundles-${{ matrix.platform }}
           path: |
