@@ -82,6 +82,10 @@ jobs:
 
       - name: install libheif (windows only)
         if: ${{ startsWith(matrix.platform, 'windows') }}
+        env:
+          VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+          ACTIONS_CACHE_URL: ${{ env.ACTIONS_CACHE_URL }}
+          ACTIONS_RUNTIME_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
         run: |
           vcpkg install libheif
 
