@@ -7,6 +7,8 @@
     * SvelteKit (Frontend)
     * TypeScript
     * Tailwind CSS
+    * bun
+      * to start the development server use `bun run tauri dev`
 
 # General workflow
   * When asked for a change, help with a bug or error or a research question, always create a plan and ask for approval before chaning any file.

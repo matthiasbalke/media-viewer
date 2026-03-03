@@ -254,6 +254,41 @@
                         {/if}
                     </div>
                 </div>
+
+                <!-- Section: Navigation -->
+                <div>
+                    <h3
+                        class="text-sm font-medium text-zinc-400 uppercase tracking-wider mb-4"
+                    >
+                        Navigation
+                    </h3>
+                    <div class="space-y-4">
+                        <div class="flex items-center justify-between gap-4">
+                            <div>
+                                <p class="text-sm font-medium text-zinc-200">
+                                    Folder Tree Modifier
+                                </p>
+                                <p class="text-xs text-zinc-500 mt-1 max-w-sm">
+                                    Select the modifier key to use for keyboard
+                                    navigation in the folder tree.
+                                </p>
+                            </div>
+                            <select
+                                class="bg-zinc-800 text-white text-sm rounded-lg border border-zinc-700 focus:ring-amber-500 focus:border-amber-500 block px-3 py-2"
+                                value={settingsStore.treeNavModifier}
+                                onchange={(e) =>
+                                    settingsStore.setTreeNavModifier(
+                                        e.currentTarget.value,
+                                    )}
+                            >
+                                <option value="Alt">Alt / Option</option>
+                                <option value="Control">Control</option>
+                                <option value="Shift">Shift</option>
+                                <option value="Meta">Meta / Command</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

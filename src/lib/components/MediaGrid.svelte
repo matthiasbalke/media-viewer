@@ -217,6 +217,16 @@
         const activeNode = document.activeElement?.nodeName;
         if (activeNode === "INPUT" || activeNode === "TEXTAREA") return;
 
+        // Ignore if a modifier key is pressed (might be for FolderTree navigation)
+        const modifier = settingsStore.treeNavModifier;
+        const hasModifier =
+            (modifier === "Alt" && event.altKey) ||
+            (modifier === "Control" && event.ctrlKey) ||
+            (modifier === "Shift" && event.shiftKey) ||
+            (modifier === "Meta" && event.metaKey);
+
+        if (hasModifier) return;
+
         let newIndex = selectedIndex;
         // Determine columns
         let cols = 1;

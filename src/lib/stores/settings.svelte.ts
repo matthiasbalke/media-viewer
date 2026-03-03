@@ -10,6 +10,7 @@ const storeOptions = {
         thumbnailSize: DEFAULT_THUMBNAIL_SIZE,
         sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
         rootPaths: [] as string[],
+        treeNavModifier: "Alt",
     },
     autoSave: true as const,
     overrideDefaults: false,
@@ -20,6 +21,7 @@ class SettingsStore {
     sidebarWidth = $state(DEFAULT_SIDEBAR_WIDTH);
     rootPaths = $state<string[]>([]);
     cacheBaseDir = $state<string | null>(null);
+    treeNavModifier = $state("Alt");
     ready = $state(false);
 
     private store: any = null;
@@ -62,6 +64,11 @@ class SettingsStore {
                 await this.store.set("cacheBaseDir", this.cacheBaseDir);
             }
 
+            const savedTreeNavModifier = await this.store.get("treeNavModifier") as string | null | undefined;
+            if (savedTreeNavModifier !== null && savedTreeNavModifier !== undefined) {
+                this.treeNavModifier = savedTreeNavModifier;
+            }
+
         } catch (error) {
             console.error("Failed to load settings:", error);
         } finally {
@@ -95,6 +102,11 @@ class SettingsStore {
     async setCacheBaseDir(path: string) {
         this.cacheBaseDir = path;
         await this.saveNow("cacheBaseDir", path);
+    }
+
+    async setTreeNavModifier(modifier: string) {
+        this.treeNavModifier = modifier;
+        await this.saveNow("treeNavModifier", modifier);
     }
 
     private debouncedSave(key: string, value: any) {

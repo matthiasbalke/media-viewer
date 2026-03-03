@@ -149,11 +149,117 @@
       selectedPath = null;
     }
   }
+
+  function handleKeydown(e: KeyboardEvent) {
+    const modifier = settingsStore.treeNavModifier;
+    const hasModifier =
+      (modifier === "Alt" &&
+        e.altKey &&
+        !e.ctrlKey &&
+        !e.shiftKey &&
+        !e.metaKey) ||
+      (modifier === "Control" &&
+        e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        !e.metaKey) ||
+      (modifier === "Shift" &&
+        e.shiftKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.metaKey) ||
+      (modifier === "Meta" &&
+        e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey);
+
+    if (!hasModifier) return;
+
+    if (
+      [
+        "ArrowUp",
+        "ArrowDown",
+        "PageUp",
+        "PageDown",
+        "ArrowLeft",
+        "ArrowRight",
+      ].includes(e.key)
+    ) {
+      e.preventDefault();
+
+      // Use DOM query to find all flattened visible items in vertical order
+      const items = Array.from(
+        document.querySelectorAll<HTMLButtonElement>(".folder-tree-item"),
+      );
+      if (items.length === 0) return;
+
+      const currentIndex = items.findIndex(
+        (el) => el.dataset.path === selectedPath,
+      );
+
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+        if (currentIndex === -1) {
+          const firstItem = items[0];
+          if (firstItem.dataset.path) {
+            handleFolderSelect(firstItem.dataset.path);
+            firstItem.scrollIntoView({ block: "nearest" });
+          }
+          return;
+        }
+
+        const currentItem = items[currentIndex];
+        if (e.key === "ArrowRight") {
+          if (
+            currentItem.dataset.expanded === "false" &&
+            currentItem.dataset.hasSubfolders === "true"
+          ) {
+            currentItem.click();
+          }
+        } else if (e.key === "ArrowLeft") {
+          if (currentItem.dataset.expanded === "true") {
+            currentItem.click();
+          }
+        }
+        return;
+      }
+
+      let nextIndex = currentIndex;
+      let isInitial = false;
+
+      if (currentIndex === -1) {
+        nextIndex = 0;
+        isInitial = true;
+      } else if (e.key === "ArrowDown") {
+        nextIndex =
+          currentIndex < items.length - 1 ? currentIndex + 1 : currentIndex;
+      } else if (e.key === "ArrowUp") {
+        nextIndex = currentIndex > 0 ? currentIndex - 1 : 0;
+      } else if (e.key === "PageDown") {
+        nextIndex = Math.min(currentIndex + 10, items.length - 1);
+      } else if (e.key === "PageUp") {
+        nextIndex = Math.max(currentIndex - 10, 0);
+      }
+
+      if (
+        (isInitial || nextIndex !== currentIndex) &&
+        nextIndex >= 0 &&
+        nextIndex < items.length
+      ) {
+        const nextPath = items[nextIndex].dataset.path;
+        if (nextPath) {
+          handleFolderSelect(nextPath);
+          items[nextIndex].scrollIntoView({ block: "nearest" });
+        }
+      }
+    }
+  }
 </script>
 
 <svelte:window
   onmousemove={handleSidebarDragMove}
   onmouseup={handleSidebarDragEnd}
+  onkeydown={handleKeydown}
 />
 
 <div
