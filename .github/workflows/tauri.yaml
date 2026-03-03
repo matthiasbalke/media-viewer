@@ -34,7 +34,7 @@ jobs:
           - platform: 'windows-latest'
             arch: 'x64'
             args: ''
-            pkgConfigPath: '${{ env.VCPKG_INSTALLATION_ROOT }}/installed/x64-windows/lib/pkgconfig'
+            pkgConfigPath: 'C:\vcpkg\installed\x64-windows\lib\pkgconfig'
 
     runs-on: ${{ matrix.platform }}
     steps:
