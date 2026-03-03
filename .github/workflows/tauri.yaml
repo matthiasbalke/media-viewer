@@ -203,22 +203,22 @@ jobs:
               --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
           fi
 
-          # Rebuild the DMG from the patched .app
-          cd "$BUNDLE_DIR"
-          DMG=$(ls *.dmg 2>/dev/null | head -1)
+          # Rebuild the DMG from the patched .app (DMGs live in bundle/dmg, not bundle/macos)
+          DMG_DIR="$(dirname "$BUNDLE_DIR")/dmg"
+          DMG=$(ls "$DMG_DIR"/*.dmg 2>/dev/null | head -1)
           if [ -n "$DMG" ]; then
             VOLNAME="${APP_NAME%.app}"
             rm "$DMG"
-            hdiutil create -volname "$VOLNAME" -srcfolder "$APP_NAME" -ov -format UDZO "$DMG"
-          fi
+            hdiutil create -volname "$VOLNAME" -srcfolder "$BUNDLE_DIR/$APP_NAME" -ov -format UDZO "$DMG"
 
-          # Re-sign the DMG with the Tauri updater key (if present)
-          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            cd "$GITHUB_WORKSPACE"
-            bunx tauri signer sign \
-              "$BUNDLE_DIR/$DMG" \
-              --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
-              --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+            # Re-sign the DMG with the Tauri updater key (if present)
+            if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+              cd "$GITHUB_WORKSPACE"
+              bunx tauri signer sign \
+                "$DMG" \
+                --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+                --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+            fi
           fi
 
       - name: Upload macOS bundle artifacts
