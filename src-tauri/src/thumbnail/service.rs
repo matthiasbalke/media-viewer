@@ -213,6 +213,79 @@ impl ThumbnailService {
         }
     }
 
+    /// Extracts a proper thumbnail from any HEIC/HEIF file using the system `libheif` library.
+    /// Handles Grid-encoded HEIC (portrait mode, computational photography) by correctly
+    /// assembling tiles via the HEIF primary image item — something ffmpeg cannot do alone.
+    ///
+    /// Requires the `libheif` Cargo feature and the system `libheif` library:
+    ///   macOS:  brew install libheif
+    ///   Linux:  apt install libheif1
+    #[cfg(feature = "libheif")]
+    fn extract_heic_thumbnail_libheif(path: &Path) -> Option<Vec<u8>> {
+        use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
+
+        // HeifContext::read_from_file is a static method in libheif-rs 1.1.0
+        let ctx = HeifContext::read_from_file(&path.to_string_lossy()).ok()?;
+        let handle = ctx.primary_image_handle().ok()?;
+
+        let lib = LibHeif::new();
+
+        // Decode the primary image (correctly assembles Grid HEIC tiles)
+        let image = lib
+            .decode(&handle, ColorSpace::Rgb(RgbChroma::Rgb), None)
+            .ok()?;
+
+        // Scale down via libheif before copying pixels — much more memory-efficient
+        // than decoding the full 12MP image and resizing in Rust.
+        let w = image.width();
+        let h = image.height();
+        let scaled = if w > THUMBNAIL_SIZE || h > THUMBNAIL_SIZE {
+            let (tw, th) = if w >= h {
+                (THUMBNAIL_SIZE, h * THUMBNAIL_SIZE / w.max(1))
+            } else {
+                (w * THUMBNAIL_SIZE / h.max(1), THUMBNAIL_SIZE)
+            };
+            image.scale(tw, th, None).ok()?
+        } else {
+            image
+        };
+
+        let planes = scaled.planes();
+        let plane = planes.interleaved?;
+
+        let pw = plane.width as usize;
+        let ph = plane.height as usize;
+        let stride = plane.stride;
+        let raw = plane.data;
+
+        // De-stride the pixel buffer (libheif may pad rows)
+        let rgb_bytes: Vec<u8> = if stride == pw * 3 {
+            raw.to_vec()
+        } else {
+            let mut out = Vec::with_capacity(pw * ph * 3);
+            for row in 0..ph {
+                let start = row * stride;
+                out.extend_from_slice(&raw[start..start + pw * 3]);
+            }
+            out
+        };
+
+        let img = image::RgbImage::from_raw(pw as u32, ph as u32, rgb_bytes)?;
+        let mut jpeg_bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg_bytes),
+                image::ImageFormat::Jpeg,
+            )
+            .ok()?;
+
+        if jpeg_bytes.is_empty() {
+            None
+        } else {
+            Some(jpeg_bytes)
+        }
+    }
+
     /// Extracts a single video frame as JPEG bytes using the system `ffmpeg` binary.
 
     /// Searches common Homebrew installation paths on macOS.
@@ -490,11 +563,21 @@ impl ThumbnailService {
 
                         let cache_base = PathBuf::from(&cache_base_dir_worker);
 
-                        // 1. Try EXIF IFD1 embedded JPEG thumbnail
-                        let mut resolved =
-                            tokio::task::block_in_place(|| Self::extract_heic_thumbnail(&path));
+                        // 1. Try libheif for proper Grid HEIC support (optional feature)
+                        #[cfg(feature = "libheif")]
+                        let mut resolved = tokio::task::block_in_place(|| {
+                            Self::extract_heic_thumbnail_libheif(&path)
+                        });
+                        #[cfg(not(feature = "libheif"))]
+                        let mut resolved: Option<Vec<u8>> = None;
 
-                        // 2. Fallback to ffmpeg
+                        // 2. Try EXIF IFD1 embedded JPEG thumbnail (regular iPhone HEIC)
+                        if resolved.is_none() {
+                            resolved =
+                                tokio::task::block_in_place(|| Self::extract_heic_thumbnail(&path));
+                        }
+
+                        // 3. Fallback to ffmpeg (works for non-Grid HEIC, may crop for Grid)
                         if resolved.is_none() {
                             resolved = tokio::task::block_in_place(|| {
                                 Self::extract_video_frame_ffmpeg(&path)
