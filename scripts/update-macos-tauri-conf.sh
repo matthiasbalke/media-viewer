@@ -39,8 +39,8 @@ fi
 
 echo "Resolving libheif framework paths ..."
 
-# Track visited libraries to avoid infinite loops
-declare -A VISITED
+# Track visited libraries to avoid infinite loops (bash 3.2-compatible, no declare -A)
+VISITED=""
 FRAMEWORK_PATHS=()
 
 # Recursively follow otool -L to collect original Homebrew dylib paths.
@@ -50,8 +50,8 @@ collect_deps() {
   local lib="$1"
   local name
   name=$(basename "$lib")
-  [[ "${VISITED[$name]+_}" ]] && return
-  VISITED["$name"]=1
+  case ":$VISITED:" in *":$name:"*) return ;; esac
+  VISITED="$VISITED:$name:"
   echo "  + $lib"
   FRAMEWORK_PATHS+=("$lib")
   while IFS= read -r dep; do
