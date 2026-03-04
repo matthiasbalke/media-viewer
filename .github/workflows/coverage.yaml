@@ -32,7 +32,33 @@ jobs:
         uses: gerlero/apt-install@v1.3.11
         with:
           # APT packages to install
-          packages: libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+          packages: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      - name: cache libheif build (ubuntu only)
+        if: ${{ startsWith(matrix.platform, 'ubuntu') }}
+        id: cache-libheif
+        uses: actions/cache@v4
+        with:
+          path: /usr/local
+          key: libheif-1.21.2-${{ matrix.platform }}-${{ matrix.arch }}
+
+      - name: compile libheif (ubuntu only)
+        if: ${{ startsWith(matrix.platform, 'ubuntu') && steps.cache-libheif.outputs.cache-hit != 'true' }}
+        run: |
+          sudo apt-get install -y cmake libde265-dev libx265-dev libjpeg-dev libpng-dev
+          # Ubuntu apt repos only have libheif 1.12-1.17; libheif-rs 2.7.0 requires >= 1.21
+          LIBHEIF_VERSION=1.21.2
+          wget -q "https://github.com/strukturag/libheif/releases/download/v${LIBHEIF_VERSION}/libheif-${LIBHEIF_VERSION}.tar.gz"
+          tar -xzf "libheif-${LIBHEIF_VERSION}.tar.gz"
+          cd "libheif-${LIBHEIF_VERSION}"
+          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DWITH_EXAMPLES=OFF -DWITH_TESTS=OFF .
+          make -j$(nproc)
+          sudo make install
+
+      - name: register libheif (ubuntu only)
+        if: ${{ startsWith(matrix.platform, 'ubuntu') }}
+        run: sudo ldconfig
 
       - uses: actions/cache@v5
         with:
