@@ -77,7 +77,7 @@
     let nextSessionId = 0;
 
     let selectedIndex = $state(0);
-    let itemRefs: HTMLElement[] = [];
+    let itemRefs: HTMLElement[] = $state([]);
 
     // Event listener cleanup
     let unlistenFn: (() => void) | null = null;
@@ -542,6 +542,7 @@
             style="grid-template-columns: repeat(auto-fill, minmax({thumbnailSize}px, 1fr));"
         >
             {#each files as file, i}
+                <!-- svelte-ignore a11y_click_events_have_key_events: keyboard navigation is handled globally via svelte:window onkeydown -->
                 <div
                     bind:this={itemRefs[i]}
                     class="group relative rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 focus:outline-none transition-all cursor-pointer {i ===
