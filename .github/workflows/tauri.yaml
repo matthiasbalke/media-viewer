@@ -37,7 +37,7 @@ jobs:
           - platform: 'windows-latest'
             arch: 'x64'
             args: ''
-            pkgConfigPath: 'C:\vcpkg\installed\x64-windows\lib\pkgconfig'
+            pkgConfigPath: 'C:\\vcpkg\\installed\\x64-windows-static-md\\lib\\pkgconfig'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -91,19 +91,8 @@ jobs:
           ACTIONS_CACHE_URL: ${{ env.ACTIONS_CACHE_URL }}
           ACTIONS_RUNTIME_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
         run: |
-          vcpkg install libheif
+          vcpkg install libheif:x64-windows-static-md
           vcpkg integrate install
-
-      - name: copy libheif DLLs for bundling (windows only)
-        if: ${{ startsWith(matrix.platform, 'windows') }}
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force src-tauri\windows-dlls
-          Get-ChildItem "C:\vcpkg\installed\x64-windows\bin\" -Filter "*.dll" |
-            Where-Object { $_.Name -match "heif|de265|x265|aom|dav1d|sharpyuv|webp" } |
-            Copy-Item -Destination "src-tauri\windows-dlls\"
-          Write-Host "Bundled DLLs:"
-          Get-ChildItem "src-tauri\windows-dlls\"
 
       - name: setup node
         uses: actions/setup-node@v4
