@@ -6,7 +6,12 @@
         name: string;
         path: string;
         isVideo: boolean;
-        thumbnailState: "loading" | "ready" | "error" | "unsupported";
+        thumbnailState:
+            | "loading"
+            | "ready"
+            | "error"
+            | "unsupported"
+            | "frontend-render";
         thumbnailSrc: string | null;
     }
 
@@ -30,6 +35,8 @@
         "avif",
         "bmp",
         "ico",
+        "heic",
+        "heif",
     ];
 
     function getExtension(filename: string): string {

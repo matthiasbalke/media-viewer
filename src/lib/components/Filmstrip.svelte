@@ -5,7 +5,12 @@
         name: string;
         path: string;
         isVideo: boolean;
-        thumbnailState: "loading" | "ready" | "error" | "unsupported";
+        thumbnailState:
+            | "loading"
+            | "ready"
+            | "error"
+            | "unsupported"
+            | "frontend-render";
         thumbnailSrc: string | null;
     }
 
@@ -49,7 +54,7 @@
             onclick={() => onSelect?.(file)}
             title={file.name}
         >
-            {#if file.thumbnailState === "loading"}
+            {#if file.thumbnailState === "loading" || file.thumbnailState === "frontend-render"}
                 <div
                     class="w-full h-full flex items-center justify-center bg-zinc-900"
                 >

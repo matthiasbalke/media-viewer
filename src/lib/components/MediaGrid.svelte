@@ -56,7 +56,12 @@
         "m4v",
     ];
 
-    type ThumbnailState = "loading" | "ready" | "error" | "unsupported";
+    type ThumbnailState =
+        | "loading"
+        | "ready"
+        | "error"
+        | "unsupported"
+        | "frontend-render";
 
     interface ThumbnailUpdate {
         path: string;
@@ -117,9 +122,204 @@
                     files[index].thumbnailSrc = convertFileSrc(
                         update.thumbnailPath,
                     );
+                } else if (update.status === "frontend-render") {
+                    generateVideoThumbnail(
+                        files[index],
+                        index,
+                        update.sessionId,
+                    );
                 }
             },
         );
+    }
+
+    let videoThumbnailQueue: {
+        file: MediaFile;
+        index: number;
+        sessionId: number;
+    }[] = [];
+    let isProcessingVideoQueue = false;
+
+    async function processVideoQueue() {
+        if (isProcessingVideoQueue) return;
+        isProcessingVideoQueue = true;
+
+        while (videoThumbnailQueue.length > 0) {
+            const item = videoThumbnailQueue.shift();
+            if (item && item.sessionId === currentSessionId) {
+                await doGenerateVideoThumbnail(
+                    item.file,
+                    item.index,
+                    item.sessionId,
+                );
+            }
+        }
+
+        isProcessingVideoQueue = false;
+    }
+
+    function generateVideoThumbnail(
+        file: MediaFile,
+        index: number,
+        sessionId: number,
+    ) {
+        videoThumbnailQueue.push({ file, index, sessionId });
+        processVideoQueue();
+    }
+
+    async function doGenerateVideoThumbnail(
+        file: MediaFile,
+        index: number,
+        sessionId: number,
+    ) {
+        try {
+            const videoSrc = convertFileSrc(file.path);
+            const video = document.createElement("video");
+            video.src = videoSrc;
+            video.muted = true;
+            video.playsInline = true;
+            video.preload = "auto";
+
+            // WebKit workaround: Video must be in DOM and large enough to trigger hardware decoder
+            // A 1px element causes the HEVC decoder to skip frame decoding on some content
+            video.style.position = "fixed";
+            video.style.top = "110vh"; // Off-screen below the viewport
+            video.style.left = "0";
+            video.style.width = "320px";
+            video.style.height = "240px";
+            video.style.pointerEvents = "none";
+            video.style.zIndex = "-9999";
+            document.body.appendChild(video);
+
+            const canvas = document.createElement("canvas");
+            const context = canvas.getContext("2d");
+
+            await new Promise((resolve, reject) => {
+                let seekedFired = false;
+
+                const cleanup = () => {
+                    video.onloadeddata = null;
+                    video.onseeked = null;
+                    video.onerror = null;
+                    if (document.body.contains(video)) {
+                        document.body.removeChild(video);
+                    }
+                };
+
+                video.onloadedmetadata = () => {
+                    // Grab the first readily available frame (earlier for short Live Photos)
+                    const targetTime =
+                        video.duration < 3
+                            ? Math.min(0.5, video.duration * 0.1)
+                            : Math.min(1.0, video.duration / 2);
+
+                    video.ontimeupdate = () => {
+                        if (seekedFired) return;
+
+                        if (video.currentTime >= targetTime) {
+                            seekedFired = true;
+
+                            const draw = () => {
+                                try {
+                                    canvas.width = video.videoWidth || 640;
+                                    canvas.height = video.videoHeight || 360;
+                                    context?.drawImage(
+                                        video,
+                                        0,
+                                        0,
+                                        canvas.width,
+                                        canvas.height,
+                                    );
+                                    cleanup();
+                                    resolve(true);
+                                } catch (e) {
+                                    cleanup();
+                                    reject(e);
+                                }
+                            };
+
+                            const v = video as any;
+                            if (v.requestVideoFrameCallback) {
+                                v.requestVideoFrameCallback(() => {
+                                    v.pause();
+                                    draw();
+                                });
+                            } else {
+                                setTimeout(() => {
+                                    v.pause();
+                                    draw();
+                                }, 500);
+                            }
+                        }
+                    };
+
+                    video.play().catch((e) => {
+                        // If play() fails (e.g., autoplay restrictions), fallback to setting currentTime directly and drawing
+                        video.currentTime = targetTime;
+                        setTimeout(() => {
+                            if (!seekedFired) {
+                                seekedFired = true;
+                                context?.drawImage(
+                                    video,
+                                    0,
+                                    0,
+                                    canvas.width,
+                                    canvas.height,
+                                );
+                                cleanup();
+                                resolve(true);
+                            }
+                        }, 1000);
+                    });
+                };
+
+                video.onerror = (e) => {
+                    cleanup();
+                    reject(e);
+                };
+
+                // Safety timeout in case video loading hangs
+                setTimeout(() => {
+                    if (!seekedFired) {
+                        cleanup();
+                        reject(
+                            new Error("Video thumbnail generation timed out"),
+                        );
+                    }
+                }, 5000);
+            });
+
+            // Get base64 string
+            const base64Data = canvas.toDataURL("image/jpeg", 0.7);
+
+            // Update UI immediately if still in same session
+            if (
+                sessionId === currentSessionId &&
+                files[index] &&
+                files[index].path === file.path
+            ) {
+                files[index].thumbnailSrc = base64Data;
+                files[index].thumbnailState = "ready";
+            }
+
+            // Send back to Rust to cache
+            if (settingsStore.cacheBaseDir) {
+                await invoke("save_video_thumbnail", {
+                    path: file.path,
+                    base64Data,
+                    cacheBaseDir: settingsStore.cacheBaseDir,
+                });
+            }
+        } catch (error) {
+            console.error("Failed to generate video thumbnail:", error);
+            if (
+                sessionId === currentSessionId &&
+                files[index] &&
+                files[index].path === file.path
+            ) {
+                files[index].thumbnailState = "error";
+            }
+        }
     }
 
     async function loadMedia(dirPath: string) {
@@ -356,7 +556,7 @@
                     onclick={() => (selectedIndex = i)}
                     ondblclick={() => onImageOpen?.(file)}
                 >
-                    {#if file.thumbnailState === "loading"}
+                    {#if file.thumbnailState === "loading" || file.thumbnailState === "frontend-render"}
                         <!-- Loading spinner -->
                         <div
                             class="absolute inset-0 flex items-center justify-center bg-zinc-900"

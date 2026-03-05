@@ -38,6 +38,19 @@ async fn delete_all_thumbnails(cache_base_dir: String) -> Result<(), String> {
         .map_err(|e| format!("Task join error: {}", e))?
 }
 
+#[tauri::command]
+async fn save_video_thumbnail(
+    path: String,
+    base64_data: String,
+    cache_base_dir: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        ThumbnailService::save_video_thumbnail(path, base64_data, cache_base_dir)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -117,7 +130,8 @@ pub fn run() {
             generate_thumbnails,
             cleanup_thumbnails_for_dir,
             cleanup_orphan_thumbnails,
-            delete_all_thumbnails
+            delete_all_thumbnails,
+            save_video_thumbnail
         ])
         .setup(|app| {
             let handle = app.handle().clone();
