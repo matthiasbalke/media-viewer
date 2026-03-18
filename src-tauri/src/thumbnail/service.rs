@@ -1072,6 +1072,41 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_video_frame_ffmpeg_iphone_widecam() {
+        // Real iPhone 12 Pro wide-cam MOV: HEVC/H.265, Dolby Vision, rotation metadata.
+        // Tests a codec and container profile not covered by the H.264 MP4 fixture.
+        if find_ffmpeg().is_none() {
+            return;
+        }
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("fixtures/problematic-files/iPhone12Pro-Widecam.MOV");
+
+        let result = ThumbnailService::extract_video_frame_ffmpeg(&path);
+        assert!(result.is_some());
+        assert!(
+            result.unwrap().starts_with(&[0xFF, 0xD8, 0xFF]),
+            "expected JPEG magic bytes"
+        );
+    }
+
+    #[test]
+    fn test_extract_video_frame_ffmpeg_iphone_frontcam() {
+        // Real iPhone 12 Pro front-cam MOV: HEVC/H.265, Dolby Vision, rotation metadata.
+        if find_ffmpeg().is_none() {
+            return;
+        }
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("fixtures/problematic-files/iPhone12Pro-Frontcam.MOV");
+
+        let result = ThumbnailService::extract_video_frame_ffmpeg(&path);
+        assert!(result.is_some());
+        assert!(
+            result.unwrap().starts_with(&[0xFF, 0xD8, 0xFF]),
+            "expected JPEG magic bytes"
+        );
+    }
+
+    #[test]
     fn test_extract_video_frame_ffmpeg_nonexistent_file() {
         let result = ThumbnailService::extract_video_frame_ffmpeg(Path::new(
             "/nonexistent/path/video.mp4",
@@ -1361,6 +1396,115 @@ mod tests {
             result.err()
         );
         assert!(PathBuf::from(result.unwrap()).exists());
+    }
+
+    // ---------------------------------------------------------------------------
+    // extract_heic_thumbnail
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_heic_thumbnail_nonexistent_file() {
+        let result =
+            ThumbnailService::extract_heic_thumbnail(Path::new("/nonexistent/file.heic"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_heic_thumbnail_not_heic() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("fake.heic");
+        std::fs::write(&path, b"this is not a heic file").unwrap();
+
+        let result = ThumbnailService::extract_heic_thumbnail(&path);
+        assert!(result.is_none());
+    }
+
+    // ---------------------------------------------------------------------------
+    // generate_single — cache behaviour
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_generate_single_uses_cached_thumbnail_when_fresh() {
+        let mut fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        fixture.push("fixtures/file-examples.com/file_example_JPG_100kB.jpg");
+
+        let cache_base_dir =
+            std::env::temp_dir().join("media_viewer_test_cache_hit");
+        if cache_base_dir.exists() {
+            let _ = std::fs::remove_dir_all(&cache_base_dir);
+        }
+
+        let first = ThumbnailService::generate_single(&fixture, &cache_base_dir)
+            .expect("first generate_single failed");
+        let first_mtime = std::fs::metadata(&first).unwrap().modified().unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let second = ThumbnailService::generate_single(&fixture, &cache_base_dir)
+            .expect("second generate_single failed");
+        let second_mtime = std::fs::metadata(&second).unwrap().modified().unwrap();
+
+        assert_eq!(first, second, "should return the same path on cache hit");
+        assert_eq!(
+            first_mtime, second_mtime,
+            "thumbnail mtime should not change on cache hit"
+        );
+
+        let _ = std::fs::remove_dir_all(&cache_base_dir);
+    }
+
+    #[test]
+    fn test_generate_single_regenerates_when_source_is_newer() {
+        use tempfile::tempdir;
+        let src_dir = tempdir().unwrap();
+        let cache_dir = tempdir().unwrap();
+
+        // Copy the fixture to a temp file so we can modify its mtime
+        let mut fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        fixture.push("fixtures/file-examples.com/file_example_JPG_100kB.jpg");
+        let source = src_dir.path().join("source.jpg");
+        std::fs::copy(&fixture, &source).unwrap();
+
+        ThumbnailService::generate_single(&source, cache_dir.path())
+            .expect("first generate_single failed");
+
+        let thumb_path = cache::thumbnail_path(&source, cache_dir.path()).unwrap();
+
+        // Force the thumbnail mtime into the past so the source is guaranteed to be newer.
+        // Uses std::fs::File::set_modified (stable since Rust 1.75, cross-platform).
+        let old_time = std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(1_577_836_800); // 2020-01-01
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&thumb_path)
+            .unwrap()
+            .set_modified(old_time)
+            .unwrap();
+
+        let mtime_before = std::fs::metadata(&thumb_path).unwrap().modified().unwrap();
+
+        ThumbnailService::generate_single(&source, cache_dir.path())
+            .expect("second generate_single failed");
+
+        let mtime_after = std::fs::metadata(&thumb_path).unwrap().modified().unwrap();
+        assert!(
+            mtime_after > mtime_before,
+            "thumbnail should have been regenerated when source is newer"
+        );
+    }
+
+    #[test]
+    fn test_generate_single_returns_err_for_unsupported_file() {
+        use tempfile::tempdir;
+        let src_dir = tempdir().unwrap();
+        let cache_dir = tempdir().unwrap();
+
+        let path = src_dir.path().join("document.txt");
+        std::fs::write(&path, b"this is a text file, not an image").unwrap();
+
+        let result = ThumbnailService::generate_single(&path, cache_dir.path());
+        assert!(result.is_err(), "expected Err for unsupported file type");
     }
 
     /// #11 — The returned path string is a child of cache_base_dir.
