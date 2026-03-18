@@ -989,6 +989,108 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
+    // Helpers + tests for extract_video_frame_ffmpeg
+    // ---------------------------------------------------------------------------
+
+    fn find_ffmpeg() -> Option<&'static str> {
+        ["ffmpeg", "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+            .iter()
+            .copied()
+            .find(|&candidate| {
+                std::process::Command::new(candidate)
+                    .arg("-version")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            })
+    }
+
+    /// Trims `src` to `duration_secs` seconds using `-c copy` and writes to `dest`.
+    fn trim_video_with_ffmpeg(ffmpeg: &str, src: &Path, dest: &Path, duration_secs: f32) -> bool {
+        std::process::Command::new(ffmpeg)
+            .args([
+                "-i",
+                src.to_str().unwrap(),
+                "-t",
+                &duration_secs.to_string(),
+                "-c",
+                "copy",
+                "-y",
+                dest.to_str().unwrap(),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn test_extract_video_frame_ffmpeg_valid_mp4() {
+        if find_ffmpeg().is_none() {
+            return;
+        }
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("fixtures/file-examples.com/file_example_MP4_480_1_5MG.mp4");
+
+        let result = ThumbnailService::extract_video_frame_ffmpeg(&path);
+        assert!(result.is_some());
+        assert!(
+            result.unwrap().starts_with(&[0xFF, 0xD8, 0xFF]),
+            "expected JPEG magic bytes"
+        );
+    }
+
+    #[test]
+    fn test_extract_video_frame_ffmpeg_retries_on_short_video() {
+        // A video shorter than the 1s seek offset triggers the no-seek retry path.
+        let ffmpeg = match find_ffmpeg() {
+            Some(f) => f,
+            None => return,
+        };
+
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let short_path = dir.path().join("short.mp4");
+
+        let mut fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        fixture.push("fixtures/file-examples.com/file_example_MP4_480_1_5MG.mp4");
+
+        assert!(
+            trim_video_with_ffmpeg(ffmpeg, &fixture, &short_path, 0.1),
+            "failed to create short test fixture"
+        );
+
+        let result = ThumbnailService::extract_video_frame_ffmpeg(&short_path);
+        assert!(result.is_some());
+        assert!(
+            result.unwrap().starts_with(&[0xFF, 0xD8, 0xFF]),
+            "expected JPEG magic bytes"
+        );
+    }
+
+    #[test]
+    fn test_extract_video_frame_ffmpeg_nonexistent_file() {
+        let result = ThumbnailService::extract_video_frame_ffmpeg(Path::new(
+            "/nonexistent/path/video.mp4",
+        ));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_video_frame_ffmpeg_invalid_file() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("fake.mp4");
+        std::fs::write(&path, b"this is not a video file").unwrap();
+
+        let result = ThumbnailService::extract_video_frame_ffmpeg(&path);
+        assert!(result.is_none());
+    }
+
+    // ---------------------------------------------------------------------------
     // Helpers shared by save_video_thumbnail tests
     // ---------------------------------------------------------------------------
 
