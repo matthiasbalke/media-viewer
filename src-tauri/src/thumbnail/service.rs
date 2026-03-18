@@ -866,6 +866,129 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
+    // Helpers shared by extract_embedded_video_thumbnail tests
+    // ---------------------------------------------------------------------------
+
+    fn create_test_mp4_with_video(dir: &Path, width: u16, height: u16) -> PathBuf {
+        use mp4::{AvcConfig, Mp4Config, Mp4Sample, Mp4Writer, TrackConfig};
+
+        let path = dir.join(format!("test_{}x{}.mp4", width, height));
+        let file = std::fs::File::create(&path).unwrap();
+
+        let config = Mp4Config {
+            major_brand: str::parse("isom").unwrap(),
+            minor_version: 512,
+            compatible_brands: vec![str::parse("isom").unwrap()],
+            timescale: 1000,
+        };
+
+        let mut writer = Mp4Writer::write_start(file, &config).unwrap();
+        writer
+            .add_track(&TrackConfig::from(AvcConfig {
+                width,
+                height,
+                seq_param_set: vec![0x67, 0x42, 0xc0, 0x1e],
+                pic_param_set: vec![0x68, 0xce, 0x38, 0x80],
+            }))
+            .unwrap();
+        writer
+            .write_sample(
+                1,
+                &Mp4Sample {
+                    start_time: 0,
+                    duration: 1000,
+                    rendering_offset: 0,
+                    is_sync: true,
+                    bytes: mp4::Bytes::from(vec![0xAB, 0xCD, 0xEF, 0x01]),
+                },
+            )
+            .unwrap();
+        writer.write_end().unwrap();
+
+        path
+    }
+
+    fn create_test_mp4_no_tracks(dir: &Path) -> PathBuf {
+        use mp4::{Mp4Config, Mp4Writer};
+
+        let path = dir.join("no_tracks.mp4");
+        let file = std::fs::File::create(&path).unwrap();
+
+        let config = Mp4Config {
+            major_brand: str::parse("isom").unwrap(),
+            minor_version: 512,
+            compatible_brands: vec![str::parse("isom").unwrap()],
+            timescale: 1000,
+        };
+
+        let mut writer = Mp4Writer::write_start(file, &config).unwrap();
+        writer.write_end().unwrap();
+
+        path
+    }
+
+    #[test]
+    fn test_extract_embedded_video_thumbnail_nonexistent_file() {
+        let result = ThumbnailService::extract_embedded_video_thumbnail(Path::new(
+            "/nonexistent/path/video.mp4",
+        ));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_embedded_video_thumbnail_not_mp4() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("fake.mp4");
+        std::fs::write(&path, b"this is not an mp4 file").unwrap();
+
+        let result = ThumbnailService::extract_embedded_video_thumbnail(&path);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_embedded_video_thumbnail_no_video_tracks() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let path = create_test_mp4_no_tracks(dir.path());
+
+        let result = ThumbnailService::extract_embedded_video_thumbnail(&path);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_embedded_video_thumbnail_video_too_large() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let path = create_test_mp4_with_video(dir.path(), 640, 480);
+
+        let result = ThumbnailService::extract_embedded_video_thumbnail(&path);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_embedded_video_thumbnail_real_mov_without_thumbnail_track() {
+        // This MOV has a single 1280x720 video track and no embedded thumbnail track,
+        // so the function should return None without panicking.
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("fixtures/file-examples.com/file_example_MOV_1280_1_4MB.mov");
+
+        let result = ThumbnailService::extract_embedded_video_thumbnail(&path);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_embedded_video_thumbnail_returns_sample_for_small_track() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let path = create_test_mp4_with_video(dir.path(), 240, 180);
+
+        let result = ThumbnailService::extract_embedded_video_thumbnail(&path);
+        assert!(result.is_some());
+        assert!(!result.unwrap().is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
     // Helpers shared by save_video_thumbnail tests
     // ---------------------------------------------------------------------------
 
