@@ -211,11 +211,14 @@ jobs:
           xattr -cr "$APP_PATH"
           BINARY="$APP_PATH/Contents/MacOS/media-viewer"
           chmod +x "$BINARY"
-          set +e
-          gtimeout 5s "$BINARY"
-          EXIT=$?
-          set -e
-          [ $EXIT -eq 0 ] || [ $EXIT -eq 124 ]
+          "$BINARY" &
+          PID=$!
+          sleep 5
+          if kill -0 $PID 2>/dev/null; then
+            kill $PID && wait $PID 2>/dev/null
+            exit 0
+          fi
+          wait $PID && exit 0 || exit 1
 
       - name: Smoke test (Linux)
         if: ${{ startsWith(inputs.platform, 'ubuntu') }}
