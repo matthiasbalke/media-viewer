@@ -211,17 +211,23 @@ jobs:
           xattr -cr "$APP_PATH"
           BINARY="$APP_PATH/Contents/MacOS/media-viewer"
           chmod +x "$BINARY"
-          timeout 5s "$BINARY"
+          set +e
+          gtimeout 5s "$BINARY"
           EXIT=$?
+          set -e
           [ $EXIT -eq 0 ] || [ $EXIT -eq 124 ]
 
       - name: Smoke test (Linux)
         if: ${{ startsWith(inputs.platform, 'ubuntu') }}
         run: |
+          # Remove system libheif so the AppImage uses its own bundled version
+          sudo apt-get remove -y libheif1 || true
           APPIMAGE=$(find bundle -name "*.AppImage" | head -1)
           chmod +x "$APPIMAGE"
+          set +e
           xvfb-run --auto-servernum timeout 5s "$APPIMAGE"
           EXIT=$?
+          set -e
           [ $EXIT -eq 0 ] || [ $EXIT -eq 124 ]
 
       - name: Smoke test (Windows)
