@@ -6,7 +6,12 @@
         name: string;
         path: string;
         isVideo: boolean;
-        thumbnailState: "loading" | "ready" | "error" | "unsupported";
+        thumbnailState:
+            | "loading"
+            | "ready"
+            | "error"
+            | "unsupported"
+            | "frontend-render";
         thumbnailSrc: string | null;
     }
 
@@ -30,6 +35,8 @@
         "avif",
         "bmp",
         "ico",
+        "heic",
+        "heif",
     ];
 
     function getExtension(filename: string): string {
@@ -41,8 +48,41 @@
         return WEBVIEW_SUPPORTED.includes(getExtension(filename));
     }
 
-    let imageSrc = $derived(
-        isWebViewSupported(file.name) ? convertFileSrc(file.path) : null,
+    let isPaused = $state(true);
+    let currentTime = $state(0);
+    let duration = $state(0);
+    let volume = $state(1);
+    let muted = $state(false);
+
+    function togglePlay(e?: Event) {
+        if (e) e.stopPropagation();
+        isPaused = !isPaused;
+    }
+
+    function toggleMute(e?: Event) {
+        if (e) e.stopPropagation();
+        muted = !muted;
+    }
+
+    function formatTime(seconds: number, totalDuration: number): string {
+        if (!seconds || isNaN(seconds)) seconds = 0;
+
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+
+        // Always show hours if the total duration is >= 1 hour
+        if (totalDuration >= 3600) {
+            return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+        }
+
+        return `${m}:${s.toString().padStart(2, "0")}`;
+    }
+
+    let mediaSrc = $derived(
+        isWebViewSupported(file.name) || file.isVideo
+            ? convertFileSrc(file.path)
+            : null,
     );
 
     function handleKeydown(event: KeyboardEvent) {
@@ -51,8 +91,25 @@
             return;
         }
 
-        // Navigation
+        if (event.key === " " && file.isVideo) {
+            event.preventDefault();
+            togglePlay();
+            return;
+        }
+
+        // Navigation and Seeking
         if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+            if (event.shiftKey && file.isVideo) {
+                event.preventDefault();
+                const seekAmount = 5; // seconds
+                if (event.key === "ArrowRight") {
+                    currentTime = Math.min(currentTime + seekAmount, duration);
+                } else {
+                    currentTime = Math.max(currentTime - seekAmount, 0);
+                }
+                return;
+            }
+
             const currentIndex = files.findIndex((f) => f.path === file.path);
             if (currentIndex === -1) return;
 
@@ -92,12 +149,165 @@
             </svg>
         </button>
 
-        {#if imageSrc}
-            <img
-                src={imageSrc}
-                alt={file.name}
-                class="max-w-full max-h-full object-contain rounded"
-            />
+        {#if mediaSrc}
+            {#if file.isVideo}
+                <!-- svelte-ignore a11y_media_has_caption -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <video
+                    src={mediaSrc}
+                    class="max-w-full max-h-full object-contain rounded outline-none cursor-pointer"
+                    bind:paused={isPaused}
+                    bind:currentTime
+                    bind:duration
+                    bind:volume
+                    bind:muted
+                    onclick={togglePlay}
+                ></video>
+
+                <!-- Transport Controls -->
+                <div
+                    class="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 py-2 px-4 bg-zinc-900/80 backdrop-blur-md border border-zinc-700/50 rounded-xl max-w-xl w-[calc(100%-2rem)] shadow-2xl z-20"
+                >
+                    <button
+                        class="w-8 h-8 shrink-0 flex items-center justify-center rounded-full hover:bg-zinc-700 text-zinc-300 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                        onclick={togglePlay}
+                        title={isPaused ? "Play (Space)" : "Pause (Space)"}
+                    >
+                        {#if isPaused}
+                            <!-- Play Icon -->
+                            <svg
+                                viewBox="0 0 24 24"
+                                fill="currentColor"
+                                class="w-5 h-5 ml-1"
+                            >
+                                <path d="M8 5v14l11-7z" />
+                            </svg>
+                        {:else}
+                            <!-- Pause Icon -->
+                            <svg
+                                viewBox="0 0 24 24"
+                                fill="currentColor"
+                                class="w-5 h-5"
+                            >
+                                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+                            </svg>
+                        {/if}
+                    </button>
+
+                    <span
+                        class="text-xs font-medium text-zinc-400 font-mono tracking-wider w-14 text-center shrink-0"
+                    >
+                        {formatTime(currentTime, duration)}
+                    </span>
+
+                    <input
+                        type="range"
+                        min="0"
+                        max={duration || 1}
+                        step="0.01"
+                        bind:value={currentTime}
+                        class="flex-1 h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500 hover:accent-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                        onpointerdown={(e) => e.stopPropagation()}
+                    />
+
+                    <span
+                        class="text-xs font-medium text-zinc-500 font-mono tracking-wider w-14 text-center shrink-0"
+                    >
+                        {formatTime(duration, duration)}
+                    </span>
+
+                    <div class="flex items-center gap-2 group w-24 shrink-0">
+                        <button
+                            class="w-8 h-8 shrink-0 flex items-center justify-center rounded-full hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                            onclick={toggleMute}
+                            title={muted ? "Unmute" : "Mute"}
+                        >
+                            {#if muted || volume === 0}
+                                <!-- Muted Icon -->
+                                <svg
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    class="w-4 h-4"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"
+                                    />
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"
+                                    />
+                                </svg>
+                            {:else if volume < 0.5}
+                                <!-- Volume Low Icon -->
+                                <svg
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    class="w-4 h-4"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"
+                                    />
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M15.536 8.464a5 5 0 010 7.072"
+                                    />
+                                </svg>
+                            {:else}
+                                <!-- Volume High Icon -->
+                                <svg
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    stroke-width="2"
+                                    class="w-4 h-4"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"
+                                    />
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M15.536 8.464a5 5 0 010 7.072"
+                                    />
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M19.071 4.929a10 10 0 010 14.142"
+                                    />
+                                </svg>
+                            {/if}
+                        </button>
+                        <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.05"
+                            bind:value={volume}
+                            class="w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500 hover:accent-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onpointerdown={(e) => e.stopPropagation()}
+                        />
+                    </div>
+                </div>
+            {:else}
+                <img
+                    src={mediaSrc}
+                    alt={file.name}
+                    class="max-w-full max-h-full object-contain rounded shadow-2xl"
+                />
+            {/if}
         {:else}
             <div class="flex flex-col items-center gap-3 text-zinc-500">
                 <span class="text-5xl">🖼️</span>
@@ -109,7 +319,7 @@
 
         <!-- File name -->
         <div
-            class="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 bg-zinc-900/70 backdrop-blur-md rounded-md text-xs text-zinc-400 whitespace-nowrap max-w-[80%] overflow-hidden text-ellipsis"
+            class="absolute top-3 left-1/2 -translate-x-1/2 px-4 py-1.5 bg-zinc-900/70 backdrop-blur-md border border-zinc-700/50 rounded-lg text-sm font-medium text-zinc-300 whitespace-nowrap max-w-[60%] overflow-hidden text-ellipsis z-10 shadow-lg"
         >
             {file.name}
         </div>

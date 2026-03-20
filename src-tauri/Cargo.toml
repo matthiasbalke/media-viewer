@@ -32,6 +32,9 @@ image = "0.25.9"
 tokio = { version = "1.49.0", features = ["rt", "sync"] }
 dirs = "6"
 tauri-plugin-os = "2.3.2"
+base64 = "0.22.1"
+mp4 = "0.14"
+kamadak-exif = "0.5"
 
 # Optimize image processing dependencies even in dev builds
 [profile.dev.package.image]

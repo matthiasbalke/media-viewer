@@ -56,7 +56,12 @@
         "m4v",
     ];
 
-    type ThumbnailState = "loading" | "ready" | "error" | "unsupported";
+    type ThumbnailState =
+        | "loading"
+        | "ready"
+        | "error"
+        | "unsupported"
+        | "frontend-render";
 
     interface ThumbnailUpdate {
         path: string;
@@ -70,6 +75,9 @@
     let error: string | null = $state(null);
     let currentSessionId: number | null = $state(null);
     let nextSessionId = 0;
+
+    let selectedIndex = $state(0);
+    let itemRefs: HTMLElement[] = [];
 
     // Event listener cleanup
     let unlistenFn: (() => void) | null = null;
@@ -114,9 +122,204 @@
                     files[index].thumbnailSrc = convertFileSrc(
                         update.thumbnailPath,
                     );
+                } else if (update.status === "frontend-render") {
+                    generateVideoThumbnail(
+                        files[index],
+                        index,
+                        update.sessionId,
+                    );
                 }
             },
         );
+    }
+
+    let videoThumbnailQueue: {
+        file: MediaFile;
+        index: number;
+        sessionId: number;
+    }[] = [];
+    let isProcessingVideoQueue = false;
+
+    async function processVideoQueue() {
+        if (isProcessingVideoQueue) return;
+        isProcessingVideoQueue = true;
+
+        while (videoThumbnailQueue.length > 0) {
+            const item = videoThumbnailQueue.shift();
+            if (item && item.sessionId === currentSessionId) {
+                await doGenerateVideoThumbnail(
+                    item.file,
+                    item.index,
+                    item.sessionId,
+                );
+            }
+        }
+
+        isProcessingVideoQueue = false;
+    }
+
+    function generateVideoThumbnail(
+        file: MediaFile,
+        index: number,
+        sessionId: number,
+    ) {
+        videoThumbnailQueue.push({ file, index, sessionId });
+        processVideoQueue();
+    }
+
+    async function doGenerateVideoThumbnail(
+        file: MediaFile,
+        index: number,
+        sessionId: number,
+    ) {
+        try {
+            const videoSrc = convertFileSrc(file.path);
+            const video = document.createElement("video");
+            video.src = videoSrc;
+            video.muted = true;
+            video.playsInline = true;
+            video.preload = "auto";
+
+            // WebKit workaround: Video must be in DOM and large enough to trigger hardware decoder
+            // A 1px element causes the HEVC decoder to skip frame decoding on some content
+            video.style.position = "fixed";
+            video.style.top = "110vh"; // Off-screen below the viewport
+            video.style.left = "0";
+            video.style.width = "320px";
+            video.style.height = "240px";
+            video.style.pointerEvents = "none";
+            video.style.zIndex = "-9999";
+            document.body.appendChild(video);
+
+            const canvas = document.createElement("canvas");
+            const context = canvas.getContext("2d");
+
+            await new Promise((resolve, reject) => {
+                let seekedFired = false;
+
+                const cleanup = () => {
+                    video.onloadeddata = null;
+                    video.onseeked = null;
+                    video.onerror = null;
+                    if (document.body.contains(video)) {
+                        document.body.removeChild(video);
+                    }
+                };
+
+                video.onloadedmetadata = () => {
+                    // Grab the first readily available frame (earlier for short Live Photos)
+                    const targetTime =
+                        video.duration < 3
+                            ? Math.min(0.5, video.duration * 0.1)
+                            : Math.min(1.0, video.duration / 2);
+
+                    video.ontimeupdate = () => {
+                        if (seekedFired) return;
+
+                        if (video.currentTime >= targetTime) {
+                            seekedFired = true;
+
+                            const draw = () => {
+                                try {
+                                    canvas.width = video.videoWidth || 640;
+                                    canvas.height = video.videoHeight || 360;
+                                    context?.drawImage(
+                                        video,
+                                        0,
+                                        0,
+                                        canvas.width,
+                                        canvas.height,
+                                    );
+                                    cleanup();
+                                    resolve(true);
+                                } catch (e) {
+                                    cleanup();
+                                    reject(e);
+                                }
+                            };
+
+                            const v = video as any;
+                            if (v.requestVideoFrameCallback) {
+                                v.requestVideoFrameCallback(() => {
+                                    v.pause();
+                                    draw();
+                                });
+                            } else {
+                                setTimeout(() => {
+                                    v.pause();
+                                    draw();
+                                }, 500);
+                            }
+                        }
+                    };
+
+                    video.play().catch((e) => {
+                        // If play() fails (e.g., autoplay restrictions), fallback to setting currentTime directly and drawing
+                        video.currentTime = targetTime;
+                        setTimeout(() => {
+                            if (!seekedFired) {
+                                seekedFired = true;
+                                context?.drawImage(
+                                    video,
+                                    0,
+                                    0,
+                                    canvas.width,
+                                    canvas.height,
+                                );
+                                cleanup();
+                                resolve(true);
+                            }
+                        }, 1000);
+                    });
+                };
+
+                video.onerror = (e) => {
+                    cleanup();
+                    reject(e);
+                };
+
+                // Safety timeout in case video loading hangs
+                setTimeout(() => {
+                    if (!seekedFired) {
+                        cleanup();
+                        reject(
+                            new Error("Video thumbnail generation timed out"),
+                        );
+                    }
+                }, 5000);
+            });
+
+            // Get base64 string
+            const base64Data = canvas.toDataURL("image/jpeg", 0.7);
+
+            // Update UI immediately if still in same session
+            if (
+                sessionId === currentSessionId &&
+                files[index] &&
+                files[index].path === file.path
+            ) {
+                files[index].thumbnailSrc = base64Data;
+                files[index].thumbnailState = "ready";
+            }
+
+            // Send back to Rust to cache
+            if (settingsStore.cacheBaseDir) {
+                await invoke("save_video_thumbnail", {
+                    path: file.path,
+                    base64Data,
+                    cacheBaseDir: settingsStore.cacheBaseDir,
+                });
+            }
+        } catch (error) {
+            console.error("Failed to generate video thumbnail:", error);
+            if (
+                sessionId === currentSessionId &&
+                files[index] &&
+                files[index].path === file.path
+            ) {
+                files[index].thumbnailState = "error";
+            }
+        }
     }
 
     async function loadMedia(dirPath: string) {
@@ -154,6 +357,7 @@
             // Sort by name
             files = mediaFiles.sort((a, b) => a.name.localeCompare(b.name));
             loading = false;
+            selectedIndex = 0;
 
             // Set up event listener before triggering generation
             await setupListener();
@@ -188,6 +392,7 @@
         } else if (!path) {
             files = [];
             currentSessionId = null;
+            selectedIndex = 0;
         }
     });
 
@@ -204,7 +409,117 @@
         itemCount = files.length;
         mediaFiles = files;
     });
+
+    function handleKeydown(event: KeyboardEvent) {
+        if (!files.length) return;
+
+        // Ignore if focus is in an input field
+        const activeNode = document.activeElement?.nodeName;
+        if (activeNode === "INPUT" || activeNode === "TEXTAREA") return;
+
+        // Ignore if a modifier key is pressed (might be for FolderTree navigation)
+        const modifier = settingsStore.treeNavModifier;
+        const hasModifier =
+            (modifier === "Alt" && event.altKey) ||
+            (modifier === "Control" && event.ctrlKey) ||
+            (modifier === "Shift" && event.shiftKey) ||
+            (modifier === "Meta" && event.metaKey);
+
+        if (hasModifier) return;
+
+        let newIndex = selectedIndex;
+        // Determine columns
+        let cols = 1;
+        if (itemRefs.length > 1 && itemRefs[0] && itemRefs[1]) {
+            const firstY = itemRefs[0].offsetTop;
+            for (let i = 1; i < itemRefs.length; i++) {
+                if (itemRefs[i] && itemRefs[i].offsetTop > firstY) {
+                    cols = i;
+                    break;
+                }
+            }
+            if (
+                cols === 1 &&
+                itemRefs[itemRefs.length - 1] &&
+                itemRefs[itemRefs.length - 1].offsetTop === firstY
+            ) {
+                cols = itemRefs.length;
+            }
+        }
+
+        let handled = false;
+
+        switch (event.key) {
+            case "ArrowRight":
+                if (newIndex < files.length - 1) newIndex++;
+                handled = true;
+                break;
+            case "ArrowLeft":
+                if (newIndex > 0) newIndex--;
+                handled = true;
+                break;
+            case "ArrowDown":
+                if (newIndex + cols < files.length) {
+                    newIndex += cols;
+                } else {
+                    newIndex = files.length - 1;
+                }
+                handled = true;
+                break;
+            case "ArrowUp":
+                if (newIndex - cols >= 0) {
+                    newIndex -= cols;
+                } else {
+                    newIndex = 0;
+                }
+                handled = true;
+                break;
+            case "PageDown":
+                if (newIndex + cols * 5 < files.length) {
+                    newIndex += cols * 5;
+                } else {
+                    newIndex = files.length - 1;
+                }
+                handled = true;
+                break;
+            case "PageUp":
+                if (newIndex - cols * 5 >= 0) {
+                    newIndex -= cols * 5;
+                } else {
+                    newIndex = 0;
+                }
+                handled = true;
+                break;
+            case "Enter":
+                if (onImageOpen && files[selectedIndex]) {
+                    onImageOpen(files[selectedIndex]);
+                }
+                handled = true;
+                break;
+        }
+
+        if (handled) {
+            event.preventDefault();
+        }
+
+        if (
+            newIndex !== selectedIndex &&
+            newIndex >= 0 &&
+            newIndex < files.length
+        ) {
+            selectedIndex = newIndex;
+            // Scroll into view
+            if (itemRefs[selectedIndex]) {
+                itemRefs[selectedIndex].scrollIntoView({
+                    block: "nearest",
+                    behavior: "smooth",
+                });
+            }
+        }
+    }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <div class="p-4">
     {#if !path}
@@ -226,17 +541,22 @@
             class="grid gap-4"
             style="grid-template-columns: repeat(auto-fill, minmax({thumbnailSize}px, 1fr));"
         >
-            {#each files as file}
+            {#each files as file, i}
                 <div
-                    class="group relative rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 transition-all cursor-pointer"
+                    bind:this={itemRefs[i]}
+                    class="group relative rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 focus:outline-none transition-all cursor-pointer {i ===
+                    selectedIndex
+                        ? 'ring-2 ring-blue-500 ring-offset-2 ring-offset-zinc-900 z-10'
+                        : ''}"
                     class:bg-zinc-800={file.thumbnailState !== "ready"}
                     class:bg-transparent={file.thumbnailState === "ready"}
                     style="height: {thumbnailSize}px;"
                     role="button"
                     tabindex="0"
+                    onclick={() => (selectedIndex = i)}
                     ondblclick={() => onImageOpen?.(file)}
                 >
-                    {#if file.thumbnailState === "loading"}
+                    {#if file.thumbnailState === "loading" || file.thumbnailState === "frontend-render"}
                         <!-- Loading spinner -->
                         <div
                             class="absolute inset-0 flex items-center justify-center bg-zinc-900"

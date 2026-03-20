@@ -94,7 +94,7 @@ jobs:
           args: ${{ matrix.args }} --no-sign
 
       - name: Upload macOS bundle artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: ${{ startsWith(matrix.platform, 'macos') && github.event_name == 'pull_request' }}
         with:
           name: tauri-bundles-${{ matrix.platform }}-${{ matrix.arch }}
@@ -105,7 +105,7 @@ jobs:
             src-tauri/target/**/release/bundle/dmg/*.dmg.sig
 
       - name: Upload Windows bundle artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: ${{ startsWith(matrix.platform, 'windows') && github.event_name == 'pull_request' }}
         with:
           name: tauri-bundles-${{ matrix.platform }}
@@ -116,7 +116,7 @@ jobs:
             src-tauri/target/**/release/bundle/nsis/*.exe.sig
 
       - name: Upload Linux bundle artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: ${{ startsWith(matrix.platform, 'ubuntu') && github.event_name == 'pull_request' }}
         with:
           name: tauri-bundles-${{ matrix.platform }}

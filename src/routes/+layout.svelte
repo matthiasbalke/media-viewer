@@ -44,13 +44,19 @@
 
   // Currently selected directory for media grid
   let selectedPath: string | null = $state(null);
+  let selectedTreeItemId: string | null = $state(null);
 
   // Currently viewed file (null = grid mode, set = viewer mode)
   interface MediaFile {
     name: string;
     path: string;
     isVideo: boolean;
-    thumbnailState: "loading" | "ready" | "error" | "unsupported";
+    thumbnailState:
+      | "loading"
+      | "ready"
+      | "error"
+      | "unsupported"
+      | "frontend-render";
     thumbnailSrc: string | null;
   }
   let viewingFile: MediaFile | null = $state(null);
@@ -96,8 +102,9 @@
     }
   }
 
-  function handleFolderSelect(path: string) {
+  function handleFolderSelect(path: string, id?: string) {
     selectedPath = path;
+    selectedTreeItemId = id || null;
     viewingFile = null; // reset viewer when switching folders
   }
 
@@ -125,13 +132,17 @@
       settingsStore.addRootPath(normalized);
       // Auto-select the new directory
       selectedPath = normalized;
+      selectedTreeItemId = normalized + "|" + normalized;
     }
   }
 
   async function removeRootPath(pathToRemove: string) {
-    // Clean up thumbnails for this directory tree
+    // Clean up thumbnails for this directory tree if enabled
     try {
-      if (settingsStore.cacheBaseDir) {
+      if (
+        settingsStore.cacheBaseDir &&
+        settingsStore.cleanupCacheOnRootRemove
+      ) {
         await invoke("cleanup_thumbnails_for_dir", {
           dir: pathToRemove,
           cacheBaseDir: settingsStore.cacheBaseDir,
@@ -147,6 +158,113 @@
     // Clear selection if it was within the removed tree
     if (selectedPath?.startsWith(pathToRemove)) {
       selectedPath = null;
+      selectedTreeItemId = null;
+    }
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    const modifier = settingsStore.treeNavModifier;
+    const hasModifier =
+      (modifier === "Alt" &&
+        e.altKey &&
+        !e.ctrlKey &&
+        !e.shiftKey &&
+        !e.metaKey) ||
+      (modifier === "Control" &&
+        e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        !e.metaKey) ||
+      (modifier === "Shift" &&
+        e.shiftKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.metaKey) ||
+      (modifier === "Meta" &&
+        e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey);
+
+    if (!hasModifier) return;
+
+    if (
+      [
+        "ArrowUp",
+        "ArrowDown",
+        "PageUp",
+        "PageDown",
+        "ArrowLeft",
+        "ArrowRight",
+      ].includes(e.key)
+    ) {
+      e.preventDefault();
+
+      // Use DOM query to find all flattened visible items in vertical order
+      const items = Array.from(
+        document.querySelectorAll<HTMLButtonElement>(".folder-tree-item"),
+      );
+      if (items.length === 0) return;
+
+      const currentIndex = items.findIndex(
+        (el) => el.dataset.id === selectedTreeItemId,
+      );
+
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+        if (currentIndex === -1) {
+          const firstItem = items[0];
+          if (firstItem.dataset.path) {
+            handleFolderSelect(firstItem.dataset.path, firstItem.dataset.id);
+            firstItem.scrollIntoView({ block: "nearest" });
+          }
+          return;
+        }
+
+        const currentItem = items[currentIndex];
+        if (e.key === "ArrowRight") {
+          if (
+            currentItem.dataset.expanded === "false" &&
+            currentItem.dataset.hasSubfolders === "true"
+          ) {
+            currentItem.click();
+          }
+        } else if (e.key === "ArrowLeft") {
+          if (currentItem.dataset.expanded === "true") {
+            currentItem.click();
+          }
+        }
+        return;
+      }
+
+      let nextIndex = currentIndex;
+      let isInitial = false;
+
+      if (currentIndex === -1) {
+        nextIndex = 0;
+        isInitial = true;
+      } else if (e.key === "ArrowDown") {
+        nextIndex =
+          currentIndex < items.length - 1 ? currentIndex + 1 : currentIndex;
+      } else if (e.key === "ArrowUp") {
+        nextIndex = currentIndex > 0 ? currentIndex - 1 : 0;
+      } else if (e.key === "PageDown") {
+        nextIndex = Math.min(currentIndex + 10, items.length - 1);
+      } else if (e.key === "PageUp") {
+        nextIndex = Math.max(currentIndex - 10, 0);
+      }
+
+      if (
+        (isInitial || nextIndex !== currentIndex) &&
+        nextIndex >= 0 &&
+        nextIndex < items.length
+      ) {
+        const nextPath = items[nextIndex].dataset.path;
+        const nextId = items[nextIndex].dataset.id;
+        if (nextPath) {
+          handleFolderSelect(nextPath, nextId);
+          items[nextIndex].scrollIntoView({ block: "nearest" });
+        }
+      }
     }
   }
 </script>
@@ -154,6 +272,7 @@
 <svelte:window
   onmousemove={handleSidebarDragMove}
   onmouseup={handleSidebarDragEnd}
+  onkeydown={handleKeydown}
 />
 
 <div
@@ -228,8 +347,10 @@
         {#each settingsStore.rootPaths as rootPath}
           <div class="mb-2 group/root relative">
             <FolderTree
+              rootId={rootPath}
               path={rootPath}
               {selectedPath}
+              {selectedTreeItemId}
               onSelect={handleFolderSelect}
             />
             <button

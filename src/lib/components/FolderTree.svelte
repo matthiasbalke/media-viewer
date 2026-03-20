@@ -1,15 +1,18 @@
 <script lang="ts">
     import FolderTree from "./FolderTree.svelte";
     import { readDir, stat } from "@tauri-apps/plugin-fs";
+    import { settingsStore } from "$lib/stores/settings.svelte";
 
     interface Props {
+        rootId: string;
         path: string;
         depth?: number;
         selectedPath?: string | null;
-        onSelect?: (path: string) => void;
+        selectedTreeItemId?: string | null;
+        onSelect?: (path: string, id: string) => void;
     }
 
-    let { path, depth = 0, selectedPath = null, onSelect }: Props = $props();
+    let { rootId, path, depth = 0, selectedPath = null, selectedTreeItemId = null, onSelect }: Props = $props();
 
     interface FileEntry {
         name: string;
@@ -84,7 +87,7 @@
         }
     }
 
-    function toggleDir(dirPath: string) {
+    function toggleDir(dirPath: string, id: string) {
         if (expandedDirs.has(dirPath)) {
             expandedDirs.delete(dirPath);
             expandedDirs = new Set(expandedDirs);
@@ -93,13 +96,15 @@
             expandedDirs = new Set(expandedDirs);
         }
         // Notify parent of selection
-        onSelect?.(dirPath);
+        onSelect?.(dirPath, id);
     }
 
     // Load entries on mount
     $effect(() => {
         loadEntries();
     });
+
+
 </script>
 
 <div class="folder-tree">
@@ -110,9 +115,16 @@
     {:else}
         <!-- Show root directory as top-level element -->
         {#if depth === 0}
+            {@const itemId = rootId + '|' + path}
             <button
-                class="flex items-center gap-2 w-full px-2 py-1 text-left text-sm hover:bg-zinc-800 rounded transition-colors {selectedPath === path ? 'text-white font-bold bg-zinc-800/50' : 'text-zinc-300 font-medium'}"
-                onclick={() => toggleDir(path)}
+                class="folder-tree-item flex items-center gap-2 w-full px-2 py-1 text-left text-sm hover:bg-zinc-800 rounded transition-colors {selectedTreeItemId === itemId
+                    ? 'text-white font-bold bg-zinc-800/50'
+                    : 'text-zinc-300 font-medium'}"
+                onclick={() => toggleDir(path, itemId)}
+                data-path={path}
+                data-id={itemId}
+                data-expanded={expandedDirs.has(path)}
+                data-has-subfolders={true}
             >
                 <span class="text-zinc-500 w-4 text-center">
                     {expandedDirs.has(path) ? "▼" : "▶"}
@@ -125,10 +137,17 @@
         <!-- Show children when expanded (or always for non-root) -->
         {#if depth > 0 || expandedDirs.has(path)}
             {#each entries as entry}
+                {@const entryId = rootId + '|' + entry.path}
                 <button
-                    class="flex items-center gap-2 w-full px-2 py-1 text-left text-sm hover:bg-zinc-800 rounded transition-colors {selectedPath === entry.path ? 'text-white font-bold bg-zinc-800/50' : 'text-zinc-300'}"
+                    class="folder-tree-item flex items-center gap-2 w-full px-2 py-1 text-left text-sm hover:bg-zinc-800 rounded transition-colors {selectedTreeItemId === entryId
+                        ? 'text-white font-bold bg-zinc-800/50'
+                        : 'text-zinc-300'}"
                     style="padding-left: {(depth + 1) * 16}px"
-                    onclick={() => toggleDir(entry.path)}
+                    onclick={() => toggleDir(entry.path, entryId)}
+                    data-path={entry.path}
+                    data-id={entryId}
+                    data-expanded={expandedDirs.has(entry.path)}
+                    data-has-subfolders={entry.hasSubfolders}
                 >
                     <span class="text-zinc-500 w-4 text-center">
                         {#if entry.hasSubfolders}
@@ -141,9 +160,11 @@
 
                 {#if expandedDirs.has(entry.path)}
                     <FolderTree
+                        {rootId}
                         path={entry.path}
                         depth={depth + 1}
                         {selectedPath}
+                        {selectedTreeItemId}
                         {onSelect}
                     />
                 {/if}

@@ -389,4 +389,183 @@ mod tests {
     // Must remove MV_TEST_CACHE_DIR after tests to avoid cross-contamination in other threads,
     // though `cargo test` runs in parallel, which makes full env var isolation tricky.
     // Usually tests run locally will be fine.
+
+    // ---------------------------------------------------------------------------
+    // thumbnail_path
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_thumbnail_path_deterministic() {
+        let env = setup_test_env();
+        let source = PathBuf::from("/photos/image.jpg");
+        let path1 = thumbnail_path(&source, env.temp_dir.path()).unwrap();
+        let path2 = thumbnail_path(&source, env.temp_dir.path()).unwrap();
+        assert_eq!(path1, path2, "thumbnail_path must be deterministic");
+    }
+
+    #[test]
+    fn test_thumbnail_path_inside_cache_dir() {
+        let env = setup_test_env();
+        let source = PathBuf::from("/photos/image.jpg");
+        let path = thumbnail_path(&source, env.temp_dir.path()).unwrap();
+        assert!(
+            path.starts_with(env.temp_dir.path()),
+            "thumbnail path should be inside the cache dir"
+        );
+    }
+
+    #[test]
+    fn test_thumbnail_path_ends_with_jpg() {
+        let env = setup_test_env();
+        let source = PathBuf::from("/photos/image.jpg");
+        let path = thumbnail_path(&source, env.temp_dir.path()).unwrap();
+        assert_eq!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("jpg"),
+            "thumbnail filename should end with .jpg"
+        );
+    }
+
+    #[test]
+    fn test_thumbnail_path_different_sources_differ() {
+        let env = setup_test_env();
+        let path_a = thumbnail_path(&PathBuf::from("/photos/a.jpg"), env.temp_dir.path()).unwrap();
+        let path_b = thumbnail_path(&PathBuf::from("/photos/b.jpg"), env.temp_dir.path()).unwrap();
+        assert_ne!(path_a, path_b, "different source paths must yield different thumbnail paths");
+    }
+
+    // ---------------------------------------------------------------------------
+    // cleanup_for_prefix
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_cleanup_for_prefix_removes_matching_entries_and_files() {
+        let env = setup_test_env();
+        let cache_dir = env.temp_dir.path();
+        let cache_dir_str = cache_dir.to_str().unwrap().to_string();
+
+        let path_a = PathBuf::from("/photos/vacation/img1.jpg");
+        let path_b = PathBuf::from("/photos/vacation/img2.jpg");
+        let path_c = PathBuf::from("/documents/scan1.jpg");
+
+        register_thumbnail(&path_a, cache_dir).unwrap();
+        register_thumbnail(&path_b, cache_dir).unwrap();
+        register_thumbnail(&path_c, cache_dir).unwrap();
+
+        let thumb_a = thumbnail_path(&path_a, cache_dir).unwrap();
+        let thumb_b = thumbnail_path(&path_b, cache_dir).unwrap();
+        let thumb_c = thumbnail_path(&path_c, cache_dir).unwrap();
+        std::fs::write(&thumb_a, b"fake").unwrap();
+        std::fs::write(&thumb_b, b"fake").unwrap();
+        std::fs::write(&thumb_c, b"fake").unwrap();
+
+        let removed = cleanup_for_prefix("/photos/vacation", &cache_dir_str).unwrap();
+
+        assert_eq!(removed, 2, "two matching entries should be removed");
+        assert!(!thumb_a.exists(), "matching thumbnail A should be deleted from disk");
+        assert!(!thumb_b.exists(), "matching thumbnail B should be deleted from disk");
+        assert!(thumb_c.exists(), "non-matching thumbnail C should remain on disk");
+
+        let manifest = load_manifest(cache_dir).unwrap();
+        assert!(
+            !manifest.values().any(|v| v.starts_with("/photos/vacation")),
+            "manifest should not contain the removed prefix"
+        );
+        assert!(
+            manifest.values().any(|v| v.contains("scan1")),
+            "manifest should still contain the non-matching entry"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_for_prefix_no_matches_returns_zero() {
+        let env = setup_test_env();
+        let cache_dir = env.temp_dir.path();
+        let cache_dir_str = cache_dir.to_str().unwrap().to_string();
+
+        register_thumbnail(&PathBuf::from("/photos/img.jpg"), cache_dir).unwrap();
+
+        let removed = cleanup_for_prefix("/videos", &cache_dir_str).unwrap();
+
+        assert_eq!(removed, 0, "no entries should be removed when prefix has no match");
+        let manifest = load_manifest(cache_dir).unwrap();
+        assert_eq!(manifest.len(), 1, "manifest should be unchanged");
+    }
+
+    // ---------------------------------------------------------------------------
+    // cleanup_orphans
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_cleanup_orphans_removes_entries_with_missing_source() {
+        let env = setup_test_env();
+        let cache_dir = env.temp_dir.path();
+        let cache_dir_str = cache_dir.to_str().unwrap().to_string();
+
+        // A real file that exists on disk
+        let existing_source = cache_dir.join("real_image.jpg");
+        std::fs::write(&existing_source, b"fake jpg").unwrap();
+        register_thumbnail(&existing_source, cache_dir).unwrap();
+        let thumb_existing = thumbnail_path(&existing_source, cache_dir).unwrap();
+        std::fs::write(&thumb_existing, b"fake thumb").unwrap();
+
+        // A source path that does NOT exist on disk
+        let ghost_source = PathBuf::from("/ghost/nonexistent/photo.jpg");
+        register_thumbnail(&ghost_source, cache_dir).unwrap();
+        let thumb_ghost = thumbnail_path(&ghost_source, cache_dir).unwrap();
+        std::fs::write(&thumb_ghost, b"fake thumb").unwrap();
+
+        let removed = cleanup_orphans(&cache_dir_str).unwrap();
+
+        assert_eq!(removed, 1, "one orphan should be removed");
+        assert!(!thumb_ghost.exists(), "orphan thumbnail should be deleted from disk");
+        assert!(thumb_existing.exists(), "thumbnail for existing source should remain");
+
+        let manifest = load_manifest(cache_dir).unwrap();
+        assert_eq!(manifest.len(), 1, "only the valid entry should remain in manifest");
+    }
+
+    #[test]
+    fn test_cleanup_orphans_keeps_entries_with_existing_source() {
+        let env = setup_test_env();
+        let cache_dir = env.temp_dir.path();
+        let cache_dir_str = cache_dir.to_str().unwrap().to_string();
+
+        let source = cache_dir.join("photo.jpg");
+        std::fs::write(&source, b"fake jpg").unwrap();
+        register_thumbnail(&source, cache_dir).unwrap();
+
+        let removed = cleanup_orphans(&cache_dir_str).unwrap();
+
+        assert_eq!(removed, 0, "no entries should be removed for existing sources");
+        let manifest = load_manifest(cache_dir).unwrap();
+        assert_eq!(manifest.len(), 1, "manifest should be unchanged");
+    }
+
+    // ---------------------------------------------------------------------------
+    // delete_all
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_delete_all_removes_cache_directory() {
+        let env = setup_test_env();
+        let cache_dir = env.temp_dir.path().join("thumbnails");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(cache_dir.join("abc123.jpg"), b"fake thumb").unwrap();
+        std::fs::write(cache_dir.join("manifest.json"), b"{}").unwrap();
+
+        delete_all(cache_dir.to_str().unwrap()).unwrap();
+
+        assert!(!cache_dir.exists(), "cache directory should be completely removed");
+    }
+
+    #[test]
+    fn test_delete_all_idempotent_when_dir_missing() {
+        let env = setup_test_env();
+        let cache_dir = env.temp_dir.path().join("nonexistent");
+
+        let result = delete_all(cache_dir.to_str().unwrap());
+
+        assert!(result.is_ok(), "delete_all should succeed even if directory does not exist");
+    }
 }
