@@ -220,12 +220,7 @@ jobs:
         if: ${{ startsWith(inputs.platform, 'ubuntu') }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-0 xvfb
-
-      - name: Install runtime dependencies (macOS only)
-        if: ${{ startsWith(inputs.platform, 'macos') }}
-        run: |
-          brew install libheif
+          sudo apt-get install -y --no-install-recommends --no-install-suggests libwebkit2gtk-4.1-0 xvfb
 
       - name: Smoke test (macOS)
         if: ${{ startsWith(inputs.platform, 'macos') }}
@@ -236,23 +231,19 @@ jobs:
           xattr -cr "$APP_PATH"
           BINARY="$APP_PATH/Contents/MacOS/media-viewer"
           chmod +x "$BINARY"
-          echo "Launching $BINARY ..."
           "$BINARY" &
           PID=$!
           sleep 5
           if kill -0 $PID 2>/dev/null; then
-            echo "SMOKE TEST PASSED: app is still running after 5s"
+            # App is still running after 5s - this is a pass; kill it cleanly
             kill $PID 2>/dev/null || true
             wait $PID 2>/dev/null || true
             exit 0
           fi
+          # App exited on its own; check its exit code
           wait $PID
           EXIT=$?
-          if [ $EXIT -eq 0 ]; then
-            echo "SMOKE TEST PASSED: app exited cleanly"
-          else
-            echo "SMOKE TEST FAILED: app crashed with exit code $EXIT"
-          fi
+          # Exit 0 is clean; anything else is a crash
           [ $EXIT -eq 0 ]
 
       - name: Smoke test (Linux)
@@ -264,17 +255,11 @@ jobs:
           sudo ldconfig
           APPIMAGE=$(find bundle -name "*.AppImage" | head -1)
           chmod +x "$APPIMAGE"
-          echo "Launching $APPIMAGE ..."
           set +e
           xvfb-run --auto-servernum timeout 5s "$APPIMAGE"
           EXIT=$?
           set -e
-          if [ $EXIT -eq 0 ] || [ $EXIT -eq 124 ]; then
-            echo "SMOKE TEST PASSED: app ran successfully (exit code $EXIT)"
-          else
-            echo "SMOKE TEST FAILED: app crashed with exit code $EXIT"
-            exit 1
-          fi
+          [ $EXIT -eq 0 ] || [ $EXIT -eq 124 ]
 
       - name: Smoke test (Windows)
         if: ${{ startsWith(inputs.platform, 'windows') }}
@@ -323,17 +308,11 @@ jobs:
               if ($app) { break }
             }
           }
-          if (-not $app) { Write-Error "SMOKE TEST FAILED: installed binary not found"; exit 1 }
-          Write-Host "Launching $($app.FullName) ..."
+          if (-not $app) { Write-Error "Installed binary not found"; exit 1 }
           $p = Start-Process -FilePath $app.FullName -PassThru
           Start-Sleep -Seconds 5
           if ($p.HasExited -and $p.ExitCode -ne 0) {
-            Write-Error "SMOKE TEST FAILED: app crashed with exit code $($p.ExitCode)"
+            Write-Error "App crashed with exit code $($p.ExitCode)"
             exit 1
           }
-          if (-not $p.HasExited) {
-            Write-Host "SMOKE TEST PASSED: app is still running after 5s"
-            $p.Kill()
-          } else {
-            Write-Host "SMOKE TEST PASSED: app exited cleanly"
-          }
+          if (-not $p.HasExited) { $p.Kill() }
