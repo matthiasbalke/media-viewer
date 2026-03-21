@@ -84,7 +84,11 @@ jobs:
 
       - name: register libheif (ubuntu only)
         if: ${{ startsWith(inputs.platform, 'ubuntu') }}
-        run: sudo ldconfig
+        run: |
+          # Ensure /usr/local/lib is in the dynamic linker search path so that
+          # the compiled libheif 1.21.2 takes precedence over the system libheif1 (1.12.0).
+          echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/local-lib.conf
+          sudo ldconfig
 
       - name: install libheif (windows only)
         if: ${{ startsWith(inputs.platform, 'windows') }}
