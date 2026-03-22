@@ -2,14 +2,14 @@
 # update-macos-tauri-conf.sh
 #
 # Collects libheif and all its Homebrew transitive dylib dependencies,
-# copies them into src-tauri/macOS-frameworks/, and generates
-# src-tauri/tauri.macos.conf.json with bundle.macOS.frameworks pointing
-# to relative paths (e.g. "./macOS-frameworks/libheif.1.dylib").
+# copies them into src-tauri/macOS-frameworks/, fixes their install names
+# so the binary embeds @executable_path/../Frameworks/<name> at link time,
+# and generates src-tauri/tauri.macos.conf.json with bundle.macOS.frameworks
+# pointing to relative paths (e.g. "./macOS-frameworks/libheif.1.dylib").
 #
-# Tauri requires LOCAL relative paths (relative to src-tauri/) so that it
-# can correctly rewrite the binary's LC_LOAD_DYLIB entries from the absolute
-# Homebrew path to @executable_path/../Frameworks/ at bundle time.
-# See: https://tauri.app/distribute/macos-application-bundle/#including-macos-frameworks
+# Also generates macOS-frameworks/libheif.pc so that pkg-config finds the
+# modified dylibs (with fixed install names) rather than the Homebrew originals.
+# In CI, prepend macOS-frameworks/ to PKG_CONFIG_PATH before building.
 #
 # Run this script whenever you update libheif (brew upgrade libheif),
 # then commit both src-tauri/macOS-frameworks/ and src-tauri/tauri.macos.conf.json.
@@ -79,6 +79,50 @@ for abs in "${ABSOLUTE_PATHS[@]}"; do
 done
 
 echo ""
+echo "Fixing dylib install names for self-contained bundling ..."
+
+# Step A: Change each dylib's own install name to @executable_path/../Frameworks/<name>
+for abs in "${ABSOLUTE_PATHS[@]}"; do
+  name=$(basename "$abs")
+  dest="$FRAMEWORKS_DIR/$name"
+  new_id="@executable_path/../Frameworks/$name"
+  install_name_tool -id "$new_id" "$dest"
+  echo "  id: $name → $new_id"
+done
+
+# Step B: Rewrite each dylib's internal references to other bundled dylibs
+for abs in "${ABSOLUTE_PATHS[@]}"; do
+  name=$(basename "$abs")
+  dest="$FRAMEWORKS_DIR/$name"
+  for dep_abs in "${ABSOLUTE_PATHS[@]}"; do
+    dep_name=$(basename "$dep_abs")
+    install_name_tool -change "$dep_abs" \
+      "@executable_path/../Frameworks/$dep_name" "$dest" 2>/dev/null || true
+  done
+done
+
+echo ""
+echo "Generating $FRAMEWORKS_DIR/libheif.pc for compile-time linking ..."
+
+HEIF_PREFIX="$(brew --prefix libheif)"
+HEIF_VERSION="$(PKG_CONFIG_PATH="$(brew --prefix libheif)/lib/pkgconfig" pkg-config --modversion libheif)"
+
+cat > "$FRAMEWORKS_DIR/libheif.pc" << PCEOF
+prefix=$HEIF_PREFIX
+exec_prefix=\${prefix}
+libdir=$FRAMEWORKS_DIR
+includedir=\${prefix}/include
+
+Name: libheif
+Description: HEIF and HEIC file format decoder and encoder
+Version: $HEIF_VERSION
+Cflags: -I\${includedir}
+Libs: -L\${libdir} -lheif
+PCEOF
+
+echo "  libheif.pc → libdir=$FRAMEWORKS_DIR, includedir=$HEIF_PREFIX/include"
+
+echo ""
 echo "Generating $CONF_FILE ..."
 
 # Write relative paths to a temp file (one per line) — avoids bash 4.4-only @Q expansion
@@ -109,4 +153,4 @@ EOF
 
 rm -f "$_TMP_PATHS"
 
-echo "Done. Commit src-tauri/macOS-frameworks/ and src-tauri/tauri.macos.conf.json to version control."
+echo "Done. Run from CI; macOS-frameworks/ is gitignored and regenerated each build."
