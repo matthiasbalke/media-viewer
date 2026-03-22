@@ -278,8 +278,8 @@ impl ThumbnailService {
                     if let Ok(bytes) = std::fs::read(&temp_out) {
                         let _ = std::fs::remove_file(&temp_out);
                         if !bytes.is_empty() {
-                            println!(
-                                "[thumbnail] ffmpeg extracted {} bytes from: {}",
+                            log::debug!(
+                                "ffmpeg extracted {} bytes from: {}",
                                 bytes.len(),
                                 path.display()
                             );
@@ -319,8 +319,8 @@ impl ThumbnailService {
                             if let Ok(bytes) = std::fs::read(&temp_out) {
                                 let _ = std::fs::remove_file(&temp_out);
                                 if !bytes.is_empty() {
-                                    println!(
-                                        "[thumbnail] ffmpeg (no-seek) extracted {} bytes from: {}",
+                                    log::debug!(
+                                        "ffmpeg (no-seek) extracted {} bytes from: {}",
                                         bytes.len(),
                                         path.display()
                                     );
@@ -336,8 +336,8 @@ impl ThumbnailService {
         }
 
         let _ = std::fs::remove_file(&temp_out);
-        println!(
-            "[thumbnail] ffmpeg could not extract frame from: {}",
+        log::warn!(
+            "ffmpeg could not extract frame from: {}",
             path.display()
         );
         None
@@ -507,9 +507,17 @@ impl ThumbnailService {
 
                         // 1. Try libheif for proper Grid HEIC support (optional feature)
                         #[cfg(feature = "libheif")]
-                        let mut resolved = tokio::task::block_in_place(|| {
-                            Self::extract_heic_thumbnail_libheif(&path)
-                        });
+                        let mut resolved = {
+                            let result = tokio::task::block_in_place(|| {
+                                Self::extract_heic_thumbnail_libheif(&path)
+                            });
+                            if result.is_some() {
+                                log::info!("libheif ok: {}", path.display());
+                            } else {
+                                log::warn!("libheif failed, falling back to ffmpeg: {}", path.display());
+                            }
+                            result
+                        };
                         #[cfg(not(feature = "libheif"))]
                         let mut resolved: Option<Vec<u8>> = None;
 
@@ -586,7 +594,7 @@ impl ThumbnailService {
                         );
                     }
                     Ok(Err(err)) => {
-                        eprintln!("Thumbnail error for {}: {}", path_str, err);
+                        log::error!("Thumbnail error for {}: {}", path_str, err);
                         let _ = app.emit(
                             "thumbnail-update",
                             ThumbnailUpdate {
@@ -598,7 +606,7 @@ impl ThumbnailService {
                         );
                     }
                     Err(err) => {
-                        eprintln!("Task join error for {}: {}", path_str, err);
+                        log::error!("Task join error for {}: {}", path_str, err);
                         let _ = app.emit(
                             "thumbnail-update",
                             ThumbnailUpdate {
