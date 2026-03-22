@@ -39,6 +39,42 @@ async fn delete_all_thumbnails(cache_base_dir: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn get_image_preview(path: String, cache_base_dir: String) -> Result<String, String> {
+    let source = std::path::PathBuf::from(&path);
+    let base = std::path::PathBuf::from(&cache_base_dir);
+    let dest = thumbnail::cache::preview_path(&source, &base, "jpg");
+    std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
+    if !dest.exists() {
+        tokio::task::spawn_blocking({
+            let s = source.clone();
+            let d = dest.clone();
+            move || thumbnail::service::convert_to_jpeg_ffmpeg(&s, &d)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+    }
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+async fn get_video_preview(path: String, cache_base_dir: String) -> Result<String, String> {
+    let source = std::path::PathBuf::from(&path);
+    let base = std::path::PathBuf::from(&cache_base_dir);
+    let dest = thumbnail::cache::preview_path(&source, &base, "mp4");
+    std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
+    if !dest.exists() {
+        tokio::task::spawn_blocking({
+            let s = source.clone();
+            let d = dest.clone();
+            move || thumbnail::service::remux_to_mp4_ffmpeg(&s, &d)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+    }
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 async fn save_video_thumbnail(
     path: String,
     base64_data: String,
@@ -53,6 +89,16 @@ async fn save_video_thumbnail(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let verbose = std::env::args().any(|a| a == "--verbose" || a == "-v");
+    let log_level = if verbose {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Warn
+    };
+    env_logger::Builder::new()
+        .filter_level(log_level)
+        .init();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
@@ -131,13 +177,15 @@ pub fn run() {
             cleanup_thumbnails_for_dir,
             cleanup_orphan_thumbnails,
             delete_all_thumbnails,
-            save_video_thumbnail
+            save_video_thumbnail,
+            get_image_preview,
+            get_video_preview
         ])
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = update(handle).await {
-                    eprintln!("Failed to check for updates: {}", err);
+                    log::error!("Failed to check for updates: {}", err);
                 }
             });
             Ok(())
@@ -147,11 +195,11 @@ pub fn run() {
 }
 
 async fn update(app: tauri::AppHandle) -> tauri_plugin_updater::Result<()> {
-    println!("checking for updates ...");
+    log::info!("checking for updates ...");
     if let Some(update) = app.updater()?.check().await? {
         let mut downloaded = 0;
 
-        println!(
+        log::info!(
             "updating to version {} released on {}",
             update.version,
             update
@@ -165,18 +213,18 @@ async fn update(app: tauri::AppHandle) -> tauri_plugin_updater::Result<()> {
             .download_and_install(
                 |chunk_length, content_length| {
                     downloaded += chunk_length;
-                    println!("downloaded {downloaded} from {content_length:?}");
+                    log::debug!("downloaded {downloaded} from {content_length:?}");
                 },
                 || {
-                    println!("download finished");
+                    log::info!("download finished");
                 },
             )
             .await?;
 
-        println!("update installed");
+        log::info!("update installed");
         app.restart();
     } else {
-        println!("no update found.");
+        log::info!("no update found.");
     }
 
     Ok(())

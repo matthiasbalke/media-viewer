@@ -22,10 +22,17 @@ fn manifest_path(cache_base_dir: &Path) -> PathBuf {
 
 /// Computes the hash string for a source path.
 /// Normalizes the path first to ensure consistent hashes across platforms.
-fn hash_for_path(source: &Path) -> String {
+pub fn hash_for_path(source: &Path) -> String {
     let mut hasher = DefaultHasher::new();
     super::normalize_path(&source.to_string_lossy()).hash(&mut hasher);
     format!("{:016x}", hasher.finish())
+}
+
+/// Returns the path to a preview file for a given source file.
+/// Format: <cache_base_dir>/previews/<hash>.<ext>
+pub fn preview_path(source: &Path, cache_base_dir: &Path, ext: &str) -> PathBuf {
+    let hash = hash_for_path(source);
+    cache_base_dir.join("previews").join(format!("{}.{}", hash, ext))
 }
 
 /// Returns the path to the thumbnail for a given source file.

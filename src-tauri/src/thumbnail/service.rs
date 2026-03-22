@@ -38,6 +38,19 @@ struct ThumbnailUpdate {
 
 pub struct ThumbnailService;
 
+/// Creates a `Command` that will not open a console window on Windows.
+fn new_command(program: &str) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 impl ThumbnailService {
     /// Returns true if the file is a supported image format by checking its magic bytes.
     fn is_supported(path: &Path) -> bool {
@@ -155,61 +168,76 @@ impl ThumbnailService {
         None
     }
 
-    /// Extracts the embedded JPEG thumbnail from a HEIC/HEIF file using EXIF IFD1 data.
-    /// iPhone HEIC files always contain a small JPEG preview in their EXIF block.
-    /// Returns the raw JPEG bytes if found, or None.
-    fn extract_heic_thumbnail(path: &Path) -> Option<Vec<u8>> {
-        use exif::{In, Reader, Tag, Value};
-        use std::io::BufReader;
+    /// Extracts a proper thumbnail from any HEIC/HEIF file using the system `libheif` library.
+    /// Handles Grid-encoded HEIC (portrait mode, computational photography) by correctly
+    /// assembling tiles via the HEIF primary image item — something ffmpeg cannot do alone.
+    ///
+    /// Requires the `libheif` Cargo feature and the system `libheif` library:
+    ///   macOS:  brew install libheif
+    ///   Linux:  apt install libheif1
+    #[cfg(feature = "libheif")]
+    fn extract_heic_thumbnail_libheif(path: &Path) -> Option<Vec<u8>> {
+        use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
 
-        let file = std::fs::File::open(path).ok()?;
-        let mut buf = BufReader::new(file);
+        // HeifContext::read_from_file is a static method in libheif-rs 1.1.0
+        let ctx = HeifContext::read_from_file(&path.to_string_lossy()).ok()?;
+        let handle = ctx.primary_image_handle().ok()?;
 
-        // kamadak-exif supports reading EXIF from HEIF/HEIC containers directly
-        let exif = Reader::new().read_from_container(&mut buf).ok()?;
+        let lib = LibHeif::new();
 
-        // IFD1 contains the embedded thumbnail image reference
-        let jpeg_offset = match exif.get_field(Tag::JPEGInterchangeFormat, In::THUMBNAIL) {
-            Some(f) => match &f.value {
-                Value::Long(v) => match v.first() {
-                    Some(&o) => o as usize,
-                    None => return None,
-                },
-                _ => return None,
-            },
-            None => return None,
-        };
+        // Decode the primary image (correctly assembles Grid HEIC tiles)
+        let image = lib
+            .decode(&handle, ColorSpace::Rgb(RgbChroma::Rgb), None)
+            .ok()?;
 
-        let jpeg_length = match exif.get_field(Tag::JPEGInterchangeFormatLength, In::THUMBNAIL) {
-            Some(f) => match &f.value {
-                Value::Long(v) => match v.first() {
-                    Some(&l) => l as usize,
-                    None => return None,
-                },
-                _ => return None,
-            },
-            None => return None,
-        };
-
-        if jpeg_length == 0 {
-            return None;
-        }
-
-        // exif.buf() returns the raw TIFF-format EXIF bytes.
-        // JPEGInterchangeFormat offset is relative to the TIFF header (buf start).
-        let raw = exif.buf();
-        let end = jpeg_offset.saturating_add(jpeg_length);
-        if end > raw.len() {
-            return None;
-        }
-
-        let thumb_bytes = raw[jpeg_offset..end].to_vec();
-
-        // Validate JPEG magic bytes (0xFF 0xD8 0xFF)
-        if thumb_bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-            Some(thumb_bytes)
+        // Scale down via libheif before copying pixels — much more memory-efficient
+        // than decoding the full 12MP image and resizing in Rust.
+        let w = image.width();
+        let h = image.height();
+        let scaled = if w > THUMBNAIL_SIZE || h > THUMBNAIL_SIZE {
+            let (tw, th) = if w >= h {
+                (THUMBNAIL_SIZE, h * THUMBNAIL_SIZE / w.max(1))
+            } else {
+                (w * THUMBNAIL_SIZE / h.max(1), THUMBNAIL_SIZE)
+            };
+            image.scale(tw, th, None).ok()?
         } else {
+            image
+        };
+
+        let planes = scaled.planes();
+        let plane = planes.interleaved?;
+
+        let pw = plane.width as usize;
+        let ph = plane.height as usize;
+        let stride = plane.stride;
+        let raw = plane.data;
+
+        // De-stride the pixel buffer (libheif may pad rows)
+        let rgb_bytes: Vec<u8> = if stride == pw * 3 {
+            raw.to_vec()
+        } else {
+            let mut out = Vec::with_capacity(pw * ph * 3);
+            for row in 0..ph {
+                let start = row * stride;
+                out.extend_from_slice(&raw[start..start + pw * 3]);
+            }
+            out
+        };
+
+        let img = image::RgbImage::from_raw(pw as u32, ph as u32, rgb_bytes)?;
+        let mut jpeg_bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg_bytes),
+                image::ImageFormat::Jpeg,
+            )
+            .ok()?;
+
+        if jpeg_bytes.is_empty() {
             None
+        } else {
+            Some(jpeg_bytes)
         }
     }
 
@@ -223,7 +251,7 @@ impl ThumbnailService {
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "video".to_string());
-        let temp_out = std::env::temp_dir().join(format!("miru_thumb_{}.jpg", file_stem));
+        let temp_out = std::env::temp_dir().join(format!("video_thumb_{}.jpg", file_stem));
 
         // Try common ffmpeg locations: PATH first, then Homebrew paths
         let ffmpeg_candidates = [
@@ -239,7 +267,7 @@ impl ThumbnailService {
         };
 
         for ffmpeg in &ffmpeg_candidates {
-            let result = std::process::Command::new(ffmpeg)
+            let result = new_command(ffmpeg)
                 .args([
                     "-ss",
                     &format!("{}", video_duration_secs),
@@ -263,8 +291,8 @@ impl ThumbnailService {
                     if let Ok(bytes) = std::fs::read(&temp_out) {
                         let _ = std::fs::remove_file(&temp_out);
                         if !bytes.is_empty() {
-                            println!(
-                                "[thumbnail] ffmpeg extracted {} bytes from: {}",
+                            log::debug!(
+                                "ffmpeg extracted {} bytes from: {}",
                                 bytes.len(),
                                 path.display()
                             );
@@ -282,7 +310,7 @@ impl ThumbnailService {
                     .unwrap_or(true); // file missing → also retry
 
                 if needs_retry {
-                    let result2 = std::process::Command::new(ffmpeg)
+                    let result2 = new_command(ffmpeg)
                         .args([
                             "-i",
                             &path.to_string_lossy().to_string(),
@@ -304,8 +332,8 @@ impl ThumbnailService {
                             if let Ok(bytes) = std::fs::read(&temp_out) {
                                 let _ = std::fs::remove_file(&temp_out);
                                 if !bytes.is_empty() {
-                                    println!(
-                                        "[thumbnail] ffmpeg (no-seek) extracted {} bytes from: {}",
+                                    log::debug!(
+                                        "ffmpeg (no-seek) extracted {} bytes from: {}",
                                         bytes.len(),
                                         path.display()
                                     );
@@ -321,8 +349,8 @@ impl ThumbnailService {
         }
 
         let _ = std::fs::remove_file(&temp_out);
-        println!(
-            "[thumbnail] ffmpeg could not extract frame from: {}",
+        log::warn!(
+            "ffmpeg could not extract frame from: {}",
             path.display()
         );
         None
@@ -469,7 +497,7 @@ impl ThumbnailService {
                     return;
                 }
 
-                // HEIC/HEIF: try embedded EXIF thumbnail first, then ffmpeg
+                // HEIC/HEIF: libheif full decode first, then ffmpeg
                 if Self::is_heic(&path) {
                     let cache_path =
                         cache::thumbnail_path(&path, Path::new(&cache_base_dir_worker));
@@ -490,11 +518,23 @@ impl ThumbnailService {
 
                         let cache_base = PathBuf::from(&cache_base_dir_worker);
 
-                        // 1. Try EXIF IFD1 embedded JPEG thumbnail
-                        let mut resolved =
-                            tokio::task::block_in_place(|| Self::extract_heic_thumbnail(&path));
+                        // 1. Try libheif for proper Grid HEIC support (optional feature)
+                        #[cfg(feature = "libheif")]
+                        let mut resolved = {
+                            let result = tokio::task::block_in_place(|| {
+                                Self::extract_heic_thumbnail_libheif(&path)
+                            });
+                            if result.is_some() {
+                                log::info!("libheif ok: {}", path.display());
+                            } else {
+                                log::warn!("libheif failed, falling back to ffmpeg: {}", path.display());
+                            }
+                            result
+                        };
+                        #[cfg(not(feature = "libheif"))]
+                        let mut resolved: Option<Vec<u8>> = None;
 
-                        // 2. Fallback to ffmpeg
+                        // 2. Fallback to ffmpeg (works for non-Grid HEIC, may crop for Grid)
                         if resolved.is_none() {
                             resolved = tokio::task::block_in_place(|| {
                                 Self::extract_video_frame_ffmpeg(&path)
@@ -567,7 +607,7 @@ impl ThumbnailService {
                         );
                     }
                     Ok(Err(err)) => {
-                        eprintln!("Thumbnail error for {}: {}", path_str, err);
+                        log::error!("Thumbnail error for {}: {}", path_str, err);
                         let _ = app.emit(
                             "thumbnail-update",
                             ThumbnailUpdate {
@@ -579,7 +619,7 @@ impl ThumbnailService {
                         );
                     }
                     Err(err) => {
-                        eprintln!("Task join error for {}: {}", path_str, err);
+                        log::error!("Task join error for {}: {}", path_str, err);
                         let _ = app.emit(
                             "thumbnail-update",
                             ThumbnailUpdate {
@@ -635,6 +675,71 @@ impl ThumbnailService {
         cache::register_thumbnail(source, cache_dir)?;
 
         Ok(thumb_path.to_string_lossy().to_string())
+    }
+}
+
+/// Finds an available ffmpeg binary, returning its path string.
+fn find_ffmpeg_bin() -> Option<&'static str> {
+    ["ffmpeg", "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+        .iter()
+        .copied()
+        .find(|&candidate| {
+            new_command(candidate)
+                .arg("-version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        })
+}
+
+/// Converts any ffmpeg-readable image (e.g. HEIC) to a JPEG at `dest`.
+pub fn convert_to_jpeg_ffmpeg(source: &Path, dest: &Path) -> Result<(), String> {
+    log::debug!("convert_to_jpeg_ffmpeg: {} -> {}", source.display(), dest.display());
+    let ffmpeg = find_ffmpeg_bin().ok_or_else(|| "ffmpeg not found".to_string())?;
+    let out = new_command(ffmpeg)
+        .args([
+            "-i",
+            &source.to_string_lossy(),
+            "-q:v",
+            "2",
+            "-y",
+            &dest.to_string_lossy(),
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).to_string())
+    }
+}
+
+/// Remuxes any ffmpeg-readable video to an MP4 container, copying the video
+/// stream and transcoding audio to AAC.
+pub fn remux_to_mp4_ffmpeg(source: &Path, dest: &Path) -> Result<(), String> {
+    log::debug!("remux_to_mp4_ffmpeg: {} -> {}", source.display(), dest.display());
+    let ffmpeg = find_ffmpeg_bin().ok_or_else(|| "ffmpeg not found".to_string())?;
+    let out = new_command(ffmpeg)
+        .args([
+            "-i",
+            &source.to_string_lossy(),
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            "-y",
+            &dest.to_string_lossy(),
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).to_string())
     }
 }
 
@@ -997,7 +1102,7 @@ mod tests {
             .iter()
             .copied()
             .find(|&candidate| {
-                std::process::Command::new(candidate)
+                new_command(candidate)
                     .arg("-version")
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
@@ -1009,7 +1114,7 @@ mod tests {
 
     /// Trims `src` to `duration_secs` seconds using `-c copy` and writes to `dest`.
     fn trim_video_with_ffmpeg(ffmpeg: &str, src: &Path, dest: &Path, duration_secs: f32) -> bool {
-        std::process::Command::new(ffmpeg)
+        new_command(ffmpeg)
             .args([
                 "-i",
                 src.to_str().unwrap(),
@@ -1396,28 +1501,6 @@ mod tests {
             result.err()
         );
         assert!(PathBuf::from(result.unwrap()).exists());
-    }
-
-    // ---------------------------------------------------------------------------
-    // extract_heic_thumbnail
-    // ---------------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_heic_thumbnail_nonexistent_file() {
-        let result =
-            ThumbnailService::extract_heic_thumbnail(Path::new("/nonexistent/file.heic"));
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_extract_heic_thumbnail_not_heic() {
-        use tempfile::tempdir;
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("fake.heic");
-        std::fs::write(&path, b"this is not a heic file").unwrap();
-
-        let result = ThumbnailService::extract_heic_thumbnail(&path);
-        assert!(result.is_none());
     }
 
     // ---------------------------------------------------------------------------

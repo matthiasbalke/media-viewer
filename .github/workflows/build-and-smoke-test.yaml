@@ -1,0 +1,318 @@
+name: 'Build and Smoke Test'
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        required: true
+        type: string
+      arch:
+        required: true
+        type: string
+      args:
+        required: false
+        type: string
+        default: ''
+      pkgConfigPath:
+        required: false
+        type: string
+        default: ''
+      artifact-name:
+        required: true
+        type: string
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    runs-on: ${{ inputs.platform }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: install libheif (macOS only)
+        if: ${{ startsWith(inputs.platform, 'macos') }}
+        run: |
+          brew install libheif
+
+      - name: collect libheif frameworks for bundling (macOS only)
+        if: ${{ startsWith(inputs.platform, 'macos') }}
+        run: ./scripts/update-macos-tauri-conf.sh
+
+      - name: cache libheif build (ubuntu only)
+        if: ${{ startsWith(inputs.platform, 'ubuntu') }}
+        id: cache-libheif
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/lib/libheif*
+            /usr/local/lib/pkgconfig/libheif.pc
+            /usr/local/lib/cmake/libheif
+            /usr/local/include/libheif
+          key: libheif-1.21.2-${{ inputs.platform }}-${{ inputs.arch }}
+
+      - name: install apt dependencies (ubuntu only)
+        if: ${{ startsWith(inputs.platform, 'ubuntu') }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      - name: compile libheif (ubuntu only)
+        if: ${{ startsWith(inputs.platform, 'ubuntu') }}
+        run: |
+          # Skip if libheif 1.21.2 is already correctly installed (valid cache restore).
+          # On some runners (ubuntu-22.04-arm), actions/cache cannot restore to /usr/local/lib
+          # due to permission denied, so we check the actual file rather than cache-hit output.
+          if [ -f /usr/local/lib/libheif.so.1.21.2 ]; then
+            echo "libheif 1.21.2 already installed at /usr/local/lib, skipping compilation"
+            exit 0
+          fi
+          sudo apt-get install -y cmake libde265-dev libx265-dev libjpeg-dev libpng-dev
+          # Ubuntu apt repos only have libheif 1.12-1.17; libheif-rs 2.7.0 requires >= 1.21
+          LIBHEIF_VERSION=1.21.2
+          wget -q "https://github.com/strukturag/libheif/releases/download/v${LIBHEIF_VERSION}/libheif-${LIBHEIF_VERSION}.tar.gz"
+          tar -xzf "libheif-${LIBHEIF_VERSION}.tar.gz"
+          cd "libheif-${LIBHEIF_VERSION}"
+          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DWITH_EXAMPLES=OFF -DWITH_TESTS=OFF .
+          make -j$(nproc)
+          sudo make install
+
+      - name: register libheif (ubuntu only)
+        if: ${{ startsWith(inputs.platform, 'ubuntu') }}
+        run: |
+          # Ensure /usr/local/lib is in the dynamic linker search path so that
+          # the compiled libheif 1.21.2 takes precedence over the system libheif1 (1.12.0).
+          echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/local-lib.conf
+          sudo ldconfig
+
+      - name: install libheif (windows only)
+        if: ${{ startsWith(inputs.platform, 'windows') }}
+        env:
+          VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+          ACTIONS_CACHE_URL: ${{ env.ACTIONS_CACHE_URL }}
+          ACTIONS_RUNTIME_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
+        run: |
+          vcpkg install libheif:x64-windows-static-md
+          vcpkg integrate install
+
+      - name: prepare windows-dlls directory (windows only)
+        if: ${{ startsWith(inputs.platform, 'windows') }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/windows-dlls
+          # libheif is statically linked (x64-windows-static-md); create placeholder so
+          # the tauri.windows.conf.json glob pattern "windows-dlls/*" resolves correctly.
+          New-Item -ItemType File -Force -Path src-tauri/windows-dlls/.gitkeep
+
+      - name: setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: setup bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
+          targets: ${{ inputs.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          shared-key: ${{ inputs.platform }}-${{ inputs.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Debug cargo cache sizes
+        run: |
+          du -sh ~/.cargo/registry || true
+          du -sh ~/.cargo/git || true
+          du -sh src-tauri/target/release/deps || true
+
+      - name: install frontend dependencies
+        run: bun install
+
+      - name: build and create release candidate
+        uses: tauri-apps/tauri-action@v0
+        if: ${{ github.ref == 'refs/heads/main' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PKG_CONFIG_PATH: ${{ startsWith(inputs.platform, 'macos') && format('{0}/src-tauri/macOS-frameworks:{1}', github.workspace, inputs.pkgConfigPath) || inputs.pkgConfigPath }}
+          VCPKG_ROOT: C:\vcpkg
+        with:
+          tagName: v__VERSION__ # the action automatically replaces \_\_VERSION\_\_ with the app version.
+          releaseName: 'v__VERSION__'
+          releaseBody: 'See the assets to download this version and install.'
+          releaseDraft: true
+          prerelease: false
+          assetNamePattern: "[platform]-[arch]-[name]-[version][ext]"
+          args: ${{ inputs.args }} --features libheif
+
+      - name: build and provide workflow artifacts
+        uses: tauri-apps/tauri-action@v0
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PKG_CONFIG_PATH: ${{ startsWith(inputs.platform, 'macos') && format('{0}/src-tauri/macOS-frameworks:{1}', github.workspace, inputs.pkgConfigPath) || inputs.pkgConfigPath }}
+          VCPKG_ROOT: C:\vcpkg
+        with:
+          assetNamePattern: "[platform]-[arch]-[name]-[version][ext]"
+          # will be released in 1.0.0
+          #uploadWorkflowArtifacts: true
+          args: ${{ inputs.args }} --features libheif --no-sign
+
+      - name: Upload macOS bundle artifacts
+        uses: actions/upload-artifact@v7
+        if: ${{ startsWith(inputs.platform, 'macos') && github.event_name == 'pull_request' }}
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: |
+            src-tauri/target/**/release/bundle/macos/media-viewer.app.tar.gz
+            src-tauri/target/**/release/bundle/macos/media-viewer.app.tar.gz.sig
+            src-tauri/target/**/release/bundle/dmg/*.dmg
+            src-tauri/target/**/release/bundle/dmg/*.dmg.sig
+
+      - name: Upload Windows bundle artifacts
+        uses: actions/upload-artifact@v7
+        if: ${{ startsWith(inputs.platform, 'windows') && github.event_name == 'pull_request' }}
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: |
+            src-tauri/target/**/release/bundle/msi/*.msi
+            src-tauri/target/**/release/bundle/msi/*.msi.sig
+            src-tauri/target/**/release/bundle/nsis/*.exe
+            src-tauri/target/**/release/bundle/nsis/*.exe.sig
+
+      - name: Upload Linux bundle artifacts
+        uses: actions/upload-artifact@v7
+        if: ${{ startsWith(inputs.platform, 'ubuntu') && github.event_name == 'pull_request' }}
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: |
+            src-tauri/target/**/release/bundle/deb/*.deb
+            src-tauri/target/**/release/bundle/deb/*.deb.sig
+            src-tauri/target/**/release/bundle/rpm/*.rpm
+            src-tauri/target/**/release/bundle/rpm/*.rpm.sig
+            src-tauri/target/**/release/bundle/appimage/*.AppImage
+            src-tauri/target/**/release/bundle/appimage/*.AppImage.sig
+
+  smoke-test:
+    name: Smoke Test
+    needs: build
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ${{ inputs.platform }}
+    steps:
+      - name: Download bundle artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: bundle
+
+      - name: Install runtime dependencies (Linux only)
+        if: ${{ startsWith(inputs.platform, 'ubuntu') }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends --no-install-suggests libwebkit2gtk-4.1-0 xvfb
+
+      - name: Smoke test (macOS)
+        if: ${{ startsWith(inputs.platform, 'macos') }}
+        run: |
+          APP_TARBALL=$(find bundle -name "*.app.tar.gz" | head -1)
+          tar -xzf "$APP_TARBALL" -C "$(dirname "$APP_TARBALL")"
+          APP_PATH=$(find bundle -name "media-viewer.app" -type d | head -1)
+          xattr -cr "$APP_PATH"
+          BINARY="$APP_PATH/Contents/MacOS/media-viewer"
+          chmod +x "$BINARY"
+          "$BINARY" &
+          PID=$!
+          sleep 5
+          if kill -0 $PID 2>/dev/null; then
+            # App is still running after 5s - this is a pass; kill it cleanly
+            kill $PID 2>/dev/null || true
+            wait $PID 2>/dev/null || true
+            exit 0
+          fi
+          # App exited on its own; check its exit code
+          wait $PID
+          EXIT=$?
+          # Exit 0 is clean; anything else is a crash
+          [ $EXIT -eq 0 ]
+
+      - name: Smoke test (Linux)
+        if: ${{ startsWith(inputs.platform, 'ubuntu') }}
+        run: |
+          # Purge system libheif so the AppImage uses its own bundled version.
+          # Use --force-depends to remove even if other packages depend on it.
+          sudo dpkg --force-depends --purge libheif1 || true
+          sudo ldconfig
+          APPIMAGE=$(find bundle -name "*.AppImage" | head -1)
+          chmod +x "$APPIMAGE"
+          set +e
+          xvfb-run --auto-servernum timeout 5s "$APPIMAGE"
+          EXIT=$?
+          set -e
+          [ $EXIT -eq 0 ] || [ $EXIT -eq 124 ]
+
+      - name: Smoke test (Windows)
+        if: ${{ startsWith(inputs.platform, 'windows') }}
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path bundle -Recurse -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $installer) { Write-Error "No NSIS installer found"; exit 1 }
+          Write-Host "Running installer: $($installer.FullName)"
+          Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait
+          Write-Host "Installer completed. Searching for media-viewer.exe..."
+          # Tauri NSIS installs to %LOCALAPPDATA%\<productName> by default
+          $searchPaths = @(
+            "$env:LOCALAPPDATA\media-viewer",
+            "$env:LOCALAPPDATA\Programs\media-viewer",
+            "$env:LOCALAPPDATA\Programs\com.github.matthiasbalke.media-viewer",
+            $env:ProgramFiles,
+            ${env:ProgramFiles(x86)}
+          )
+          $app = $null
+          foreach ($path in $searchPaths) {
+            if (-not $path -or -not (Test-Path $path -ErrorAction SilentlyContinue)) { continue }
+            Write-Host "Searching in: $path"
+            $app = Get-ChildItem -Path $path -Recurse -Filter "media-viewer.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($app) { Write-Host "Found: $($app.FullName)"; break }
+          }
+          if (-not $app) {
+            Write-Host "Not found in standard paths. Checking registry for install location..."
+            $regPaths = @(
+              "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+              "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+            )
+            foreach ($regPath in $regPaths) {
+              $keys = Get-ChildItem -Path $regPath -ErrorAction SilentlyContinue
+              foreach ($key in $keys) {
+                $name = $key.GetValue("DisplayName") -as [string]
+                if ($name -like "*media-viewer*") {
+                  # Registry may include quotes in the path; strip them
+                  $installLocation = ($key.GetValue("InstallLocation") -as [string]).Trim('"')
+                  Write-Host "Found registry entry: $name at $installLocation"
+                  if ($installLocation -and (Test-Path $installLocation -ErrorAction SilentlyContinue)) {
+                    $app = Get-ChildItem -Path $installLocation -Recurse -Filter "media-viewer.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($app) { Write-Host "Found: $($app.FullName)"; break }
+                  }
+                }
+              }
+              if ($app) { break }
+            }
+          }
+          if (-not $app) { Write-Error "Installed binary not found"; exit 1 }
+          $p = Start-Process -FilePath $app.FullName -PassThru
+          Start-Sleep -Seconds 5
+          if ($p.HasExited -and $p.ExitCode -ne 0) {
+            Write-Error "App crashed with exit code $($p.ExitCode)"
+            exit 1
+          }
+          if (-not $p.HasExited) { $p.Kill() }

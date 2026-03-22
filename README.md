@@ -12,14 +12,26 @@
 media-viewer is a cross platform application to browse media collections.
 The app design is based on Google Picasa, which is no longer available, so I needed a replacement, for browsing and sorting my pictures.
 
-> More image formats and video support are not implemented yet, but planned.
-
 ## Features
 
 - add multiple source folders
 - Grid view to browse all supported formats
 - Thumbnail generation for fast browsing
 - Resize the display size of the thumbnails within the grid view
+
+## Needed dependencies
+
+- [libheif](https://github.com/strukturag/libheif) is needed to create thumbnails for HEIC/HEIF files
+  * install on macOS: `brew install libheif`
+  * install on ubuntu: `sudo apt-get install -y libheif1`
+  * install on windows: `vcpkg install libheif`
+
+## Optional Dependencies
+
+- [ffmpeg](https://ffmpeg.org/) is used to created thumbnails for video files
+  * install on macOS: `brew install ffmpeg`
+  * install on ubuntu: `sudo apt-get install -y ffmpeg`
+  * install on windows: `vcpkg install ffmpeg`
 
 ## Support
 

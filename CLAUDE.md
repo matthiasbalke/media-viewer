@@ -42,7 +42,7 @@ The core feature. Flow:
 2. `src-tauri/src/thumbnail/service.rs` processes files concurrently (semaphore, MAX_WORKERS=4)
 3. For each file, determines type via magic bytes (not file extension):
    - **Standard images** (jpg, png, gif, bmp, webp, tiff, ico): resize to ≤512px → save as JPEG
-   - **HEIC/HEIF**: extract embedded EXIF IFD1 thumbnail → ffmpeg fallback
+   - **HEIC/HEIF**: libheif full decode → extract embedded EXIF IFD1 thumbnail → ffmpeg fallback
    - **Video** (mp4, webm, mkv, avi, mov, etc.): extract embedded thumbnail → ffmpeg frame extraction → emit `frontend-render` status for browser-side rendering
 4. Each result emits a `thumbnail-update` event; frontend updates the grid as events arrive
 5. Thumbnails cached by hash of normalized path; staleness tracked via manifest + mtime

@@ -1,6 +1,7 @@
 <script lang="ts">
-    import { convertFileSrc } from "@tauri-apps/api/core";
+    import { convertFileSrc, invoke } from "@tauri-apps/api/core";
     import Filmstrip from "./Filmstrip.svelte";
+    import { settingsStore } from "$lib/stores/settings.svelte";
 
     interface MediaFile {
         name: string;
@@ -53,6 +54,48 @@
     let duration = $state(0);
     let volume = $state(1);
     let muted = $state(false);
+
+    let compatibleSrc = $state<string | null>(null);
+    let convertingPreview = $state(false);
+
+    $effect(() => {
+        // Reset when navigating to a different file
+        file.path;
+        compatibleSrc = null;
+        convertingPreview = false;
+    });
+
+    async function handleImageError() {
+        if (compatibleSrc !== null || convertingPreview || !settingsStore.cacheBaseDir) return;
+        convertingPreview = true;
+        try {
+            const p = await invoke<string>("get_image_preview", {
+                path: file.path,
+                cacheBaseDir: settingsStore.cacheBaseDir,
+            });
+            compatibleSrc = convertFileSrc(p);
+        } catch {
+            compatibleSrc = ""; // mark as failed so we don't retry
+        } finally {
+            convertingPreview = false;
+        }
+    }
+
+    async function handleVideoError() {
+        if (compatibleSrc !== null || convertingPreview || !settingsStore.cacheBaseDir) return;
+        convertingPreview = true;
+        try {
+            const p = await invoke<string>("get_video_preview", {
+                path: file.path,
+                cacheBaseDir: settingsStore.cacheBaseDir,
+            });
+            compatibleSrc = convertFileSrc(p);
+        } catch {
+            compatibleSrc = "";
+        } finally {
+            convertingPreview = false;
+        }
+    }
 
     function togglePlay(e?: Event) {
         if (e) e.stopPropagation();
@@ -151,11 +194,16 @@
 
         {#if mediaSrc}
             {#if file.isVideo}
+                {#if convertingPreview}
+                    <div class="flex flex-col items-center gap-3 text-zinc-500">
+                        <p class="text-sm m-0">Converting for playback…</p>
+                    </div>
+                {:else}
                 <!-- svelte-ignore a11y_media_has_caption -->
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
                 <video
-                    src={mediaSrc}
+                    src={compatibleSrc || mediaSrc}
                     class="max-w-full max-h-full object-contain rounded outline-none cursor-pointer"
                     bind:paused={isPaused}
                     bind:currentTime
@@ -163,7 +211,9 @@
                     bind:volume
                     bind:muted
                     onclick={togglePlay}
+                    onerror={handleVideoError}
                 ></video>
+                {/if}
 
                 <!-- Transport Controls -->
                 <div
@@ -302,11 +352,18 @@
                     </div>
                 </div>
             {:else}
-                <img
-                    src={mediaSrc}
-                    alt={file.name}
-                    class="max-w-full max-h-full object-contain rounded shadow-2xl"
-                />
+                {#if convertingPreview}
+                    <div class="flex flex-col items-center gap-3 text-zinc-500">
+                        <p class="text-sm m-0">Converting…</p>
+                    </div>
+                {:else}
+                    <img
+                        src={compatibleSrc || mediaSrc}
+                        alt={file.name}
+                        class="max-w-full max-h-full object-contain rounded shadow-2xl"
+                        onerror={handleImageError}
+                    />
+                {/if}
             {/if}
         {:else}
             <div class="flex flex-col items-center gap-3 text-zinc-500">

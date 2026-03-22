@@ -1,0 +1,15 @@
+{
+  "bundle": {
+    "macOS": {
+      "frameworks": [
+        "./macOS-frameworks/libheif.dylib",
+        "./macOS-frameworks/libheif.1.dylib",
+        "./macOS-frameworks/libx265.215.dylib",
+        "./macOS-frameworks/libde265.0.dylib",
+        "./macOS-frameworks/libaom.3.dylib",
+        "./macOS-frameworks/libvmaf.3.dylib",
+        "./macOS-frameworks/libsharpyuv.0.dylib"
+      ]
+    }
+  }
+}

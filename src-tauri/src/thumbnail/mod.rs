@@ -1,5 +1,5 @@
-mod cache;
-mod service;
+pub mod cache;
+pub mod service;
 
 pub use cache::{cleanup_for_prefix, cleanup_orphans, delete_all};
 pub use service::ThumbnailService;
