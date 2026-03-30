@@ -41,7 +41,7 @@ kamadak-exif = "0.5"
 opt-level = 2
 
 [dev-dependencies]
-tempfile = "3.26"
+tempfile = "3.27"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
