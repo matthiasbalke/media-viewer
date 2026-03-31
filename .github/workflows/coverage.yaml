@@ -54,7 +54,7 @@ jobs:
         run: cd src-tauri && cargo llvm-cov --all-features --workspace --lcov --output-path target/lcov.info
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }} # required for private repos or protected branches
           files: src-tauri/target/lcov.info
